@@ -1,0 +1,14 @@
+services:
+  app:
+    build:
+      context: .
+    image: wakeword-trainer
+    ports:
+      - "${PORT:-8000}:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      # Optional HTTP Basic auth for the whole UI/API (leave empty to disable)
+      - APP_USER=${APP_USER:-admin}
+      - APP_PASSWORD=${APP_PASSWORD:-}
+    restart: unless-stopped

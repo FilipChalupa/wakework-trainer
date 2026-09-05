@@ -1,0 +1,19 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+soundfile==0.13.1
+scipy>=1.13
+numpy>=2.0
+pyyaml>=6.0
+requests>=2.32
+# --- microWakeWord and its dependencies ---
+# tensorflow is installed by the Dockerfile (TENSORFLOW_PACKAGE build arg: CPU or [and-cuda])
+ai-edge-litert>=1.2.0
+pymicro-features>=2.0.2
+audiomentations>=0.38
+datasets>=3.0,<4.0
+mmap_ninja>=0.9.0
+webrtcvad-wheels>=2.0.14
+# audio-metadata fork that unpins attrs (same fork microWakeWord's notebook uses)
+audio-metadata @ git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f
+microwakeword @ git+https://github.com/kahrendt/microWakeWord@4665173cd35f1cff9a61e06fc427f124766c488e

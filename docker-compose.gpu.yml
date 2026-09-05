@@ -1,0 +1,16 @@
+# Override for NVIDIA GPUs (Docker with nvidia-container-toolkit, works in WSL2):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+# or put COMPOSE_FILE=docker-compose.yml:docker-compose.gpu.yml into .env and just run `docker compose up --build`.
+services:
+  app:
+    build:
+      args:
+        TENSORFLOW_PACKAGE: "tensorflow[and-cuda]==2.19.0"
+    image: wakeword-trainer:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

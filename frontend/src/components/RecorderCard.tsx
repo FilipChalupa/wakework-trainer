@@ -1,0 +1,579 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  Checkbox,
+  Chip,
+  CircularProgress,
+  FormControlLabel,
+  IconButton,
+  LinearProgress,
+  MenuItem,
+  Snackbar,
+  Stack,
+  Switch,
+  Tab,
+  Tabs,
+  TextField,
+  Tooltip,
+  Typography,
+  useTheme,
+} from "@mui/material";
+import MicIcon from "@mui/icons-material/Mic";
+import PlayArrowIcon from "@mui/icons-material/PlayArrow";
+import StopIcon from "@mui/icons-material/Stop";
+import DeleteIcon from "@mui/icons-material/Delete";
+import GraphicEqIcon from "@mui/icons-material/GraphicEq";
+import PlaylistPlayIcon from "@mui/icons-material/PlaylistPlay";
+import RepeatIcon from "@mui/icons-material/Repeat";
+import UploadFileIcon from "@mui/icons-material/UploadFile";
+import WarningAmberIcon from "@mui/icons-material/WarningAmber";
+import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
+import { api, type QualityIssue, type Recording } from "../api";
+import { Recorder, waveformPeaks } from "../lib/recorder";
+
+type Kind = "positive" | "negative";
+const RECOMMENDED = 30;
+
+const ISSUE_LABELS: Record<QualityIssue, { label: string; hint: string }> = {
+  cut_start: { label: "oříznutý začátek", hint: "Slovo začíná hned na začátku nahrávky – začněte mluvit o chvíli později." },
+  cut_end: { label: "oříznutý konec", hint: "Slovo končí až na konci nahrávky – začněte mluvit dříve nebo prodlužte délku vzorku." },
+  too_short: { label: "příliš krátké", hint: "V nahrávce je jen velmi krátký zvuk." },
+  silent: { label: "ticho", hint: "Nebyl zaznamenán žádný zvuk – zkontrolujte mikrofon." },
+  clipping: { label: "přebuzeno", hint: "Signál je oříznutý – mluvte tišeji nebo dále od mikrofonu." },
+  too_quiet: { label: "příliš tiché", hint: "Nahrávka je velmi tichá – mluvte blíž k mikrofonu." },
+  unreadable: { label: "nečitelné", hint: "Soubor se nepodařilo přečíst." },
+};
+
+const VARIATION_HINTS = [
+  "normálně, přirozeně",
+  "trochu tišeji",
+  "trochu hlasitěji",
+  "pomaleji",
+  "rychleji",
+  "s otázkou v hlase",
+  "z větší vzdálenosti od mikrofonu",
+  "šeptem, ale zřetelně",
+  "vesele",
+  "unaveně / monotónně",
+];
+
+type Props = {
+  wakeWord: string;
+  durationS: number;
+  disabled: boolean;
+  onCountsChange: (counts: Record<Kind, number>) => void;
+  onError: (message: string) => void;
+};
+
+type Phase = "idle" | "prepare" | "countdown" | "recording" | "uploading";
+
+export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, onError }: Props) {
+  const theme = useTheme();
+  const [kind, setKind] = useState<Kind>("positive");
+  const [items, setItems] = useState<Record<Kind, Recording[]>>({ positive: [], negative: [] });
+  const [phase, setPhase] = useState<Phase>("idle");
+  const [countdown, setCountdown] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  const [level, setLevel] = useState(0);
+  const [lastPeaks, setLastPeaks] = useState<number[] | null>(null);
+  const [playing, setPlaying] = useState<{ id: string; progress: number } | null>(null);
+  const [playAll, setPlayAll] = useState(false);
+  const [autoPlay, setAutoPlay] = useState(true);
+  const [seriesSize, setSeriesSize] = useState(10);
+  const [series, setSeries] = useState<{ done: number; total: number } | null>(null);
+  const [devices, setDevices] = useState<{ deviceId: string; label: string }[]>([]);
+  const [deviceId, setDeviceId] = useState<string>("");
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [undo, setUndo] = useState<{ kind: Kind; ids: string[] } | null>(null);
+  const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const recorderRef = useRef(new Recorder());
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const stopSeriesRef = useRef(false);
+  const busyRef = useRef(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const [pos, neg] = await Promise.all([api.listRecordings("positive"), api.listRecordings("negative")]);
+      setItems({ positive: pos.items, negative: neg.items });
+      onCountsChange({ positive: pos.items.length, negative: neg.items.length });
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  }, [onCountsChange, onError]);
+
+  useEffect(() => {
+    refresh();
+    Recorder.listDevices().then(setDevices).catch(() => undefined);
+    const recorder = recorderRef.current;
+    return () => recorder.close();
+  }, [refresh]);
+
+  // ----- playback ---------------------------------------------------------
+  const stopPlayback = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.onended = null;
+      audioRef.current.ontimeupdate = null;
+      audioRef.current.pause();
+      audioRef.current = null;
+    }
+    setPlaying(null);
+  }, []);
+
+  const playOne = useCallback(
+    (rec: Recording) =>
+      new Promise<void>((resolve) => {
+        stopPlayback();
+        const audio = new Audio(rec.url);
+        audioRef.current = audio;
+        setPlaying({ id: rec.id, progress: 0 });
+        audio.ontimeupdate = () => setPlaying({ id: rec.id, progress: audio.duration ? audio.currentTime / audio.duration : 0 });
+        audio.onended = () => {
+          setPlaying(null);
+          resolve();
+        };
+        audio.onerror = () => {
+          setPlaying(null);
+          resolve();
+        };
+        audio.play().catch(() => resolve());
+      }),
+    [stopPlayback],
+  );
+
+  const togglePlay = (rec: Recording) => {
+    if (playing?.id === rec.id) {
+      stopPlayback();
+      setPlayAll(false);
+      return;
+    }
+    playOne(rec);
+  };
+
+  const playEverything = async () => {
+    if (playAll) {
+      setPlayAll(false);
+      stopPlayback();
+      return;
+    }
+    setPlayAll(true);
+    const list = [...items[kind]];
+    for (const rec of list) {
+      if (!audioRef.current && rec !== list[0] && playing === null && !playAllRef.current) break;
+      await playOne(rec);
+      if (!playAllRef.current) break;
+    }
+    setPlayAll(false);
+  };
+  const playAllRef = useRef(false);
+  playAllRef.current = playAll;
+
+  // ----- recording ----------------------------------------------------------
+  const captureOne = useCallback(
+    async (targetKind: Kind, doCountdown: boolean) => {
+      setLastPeaks(null);
+      setPhase("prepare");
+      await recorderRef.current.init(deviceId || undefined);
+      if (devices.length === 0) Recorder.listDevices().then(setDevices).catch(() => undefined);
+      if (doCountdown) {
+        setPhase("countdown");
+        for (let n = 3; n > 0; n--) {
+          if (stopSeriesRef.current) return null;
+          setCountdown(n);
+          await new Promise((r) => setTimeout(r, 550));
+        }
+      } else {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      setPhase("recording");
+      setElapsed(0);
+      const { wav, samples } = await recorderRef.current.record(durationS, ({ rms, elapsed }) => {
+        setLevel(Math.min(1, rms * 6));
+        setElapsed(elapsed);
+      });
+      setLevel(0);
+      setLastPeaks(waveformPeaks(samples));
+      setPhase("uploading");
+      const saved = await api.uploadRecording(targetKind, wav);
+      await refresh();
+      return saved;
+    },
+    [deviceId, devices.length, durationS, refresh],
+  );
+
+  const recordSingle = useCallback(async () => {
+    if (busyRef.current || disabled) return;
+    busyRef.current = true;
+    stopPlayback();
+    try {
+      const saved = await captureOne(kind, false);
+      setPhase("idle");
+      if (saved && autoPlay) await playOne(saved);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setPhase("idle");
+      busyRef.current = false;
+    }
+  }, [autoPlay, captureOne, disabled, kind, onError, playOne, stopPlayback]);
+
+  const recordSeries = async () => {
+    if (busyRef.current || disabled) return;
+    busyRef.current = true;
+    stopSeriesRef.current = false;
+    stopPlayback();
+    const total = Math.max(1, seriesSize);
+    setSeries({ done: 0, total });
+    try {
+      for (let i = 0; i < total; i++) {
+        if (stopSeriesRef.current) break;
+        const saved = await captureOne(kind, true);
+        if (!saved) break;
+        setSeries({ done: i + 1, total });
+        setPhase("idle");
+        if (autoPlay) await playOne(saved);
+        else await new Promise((r) => setTimeout(r, 400));
+      }
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setSeries(null);
+      setPhase("idle");
+      busyRef.current = false;
+    }
+  };
+
+  const stopSeries = () => {
+    stopSeriesRef.current = true;
+  };
+
+  // keyboard shortcuts: Space / R = record, Escape = stop
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT" || target.isContentEditable)) return;
+      if (e.code === "Space" || e.key.toLowerCase() === "r") {
+        e.preventDefault();
+        recordSingle();
+      } else if (e.key === "Escape") {
+        stopSeriesRef.current = true;
+        setPlayAll(false);
+        stopPlayback();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [recordSingle, stopPlayback]);
+
+  // ----- delete / restore ---------------------------------------------------
+  const removeMany = async (targetKind: Kind, ids: string[]) => {
+    if (!ids.length) return;
+    try {
+      if (playing && ids.includes(playing.id)) stopPlayback();
+      for (const id of ids) await api.deleteRecording(targetKind, id);
+      setSelected(new Set());
+      setUndo({ kind: targetKind, ids });
+      await refresh();
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+
+  const restore = async () => {
+    if (!undo) return;
+    try {
+      for (const id of undo.ids) await api.restoreRecording(undo.kind, id);
+      setUndo(null);
+      await refresh();
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+
+  // ----- import -------------------------------------------------------------
+  const importFiles = async (files: FileList | File[]) => {
+    const list = Array.from(files).filter((f) => f.type.startsWith("audio/") || /\.(wav|mp3|ogg|webm|m4a|flac)$/i.test(f.name));
+    if (!list.length) return;
+    setImporting({ done: 0, total: list.length });
+    let failed = 0;
+    for (let i = 0; i < list.length; i++) {
+      try {
+        await api.uploadRecording(kind, list[i], list[i].name);
+      } catch {
+        failed += 1;
+      }
+      setImporting({ done: i + 1, total: list.length });
+    }
+    setImporting(null);
+    if (failed) onError(`${failed} souborů se nepodařilo importovat.`);
+    await refresh();
+  };
+
+  // ----- derived --------------------------------------------------------------
+  const list = items[kind];
+  const positiveCount = items.positive.length;
+  const progress = Math.min(100, (positiveCount / RECOMMENDED) * 100);
+  const remaining = Math.max(0, durationS - elapsed);
+  const problems = useMemo(() => list.filter((r) => r.quality.issues.length > 0).length, [list]);
+  const hint = VARIATION_HINTS[(kind === "positive" ? positiveCount : items.negative.length) % VARIATION_HINTS.length];
+  const busy = phase !== "idle";
+
+  const toggleSelected = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+
+  return (
+    <Card
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragOver(true);
+      }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragOver(false);
+        if (!disabled) importFiles(e.dataTransfer.files);
+      }}
+      sx={{ outline: dragOver ? `2px dashed ${theme.palette.primary.main}` : "none" }}
+    >
+      <CardHeader
+        avatar={<GraphicEqIcon color="primary" />}
+        title="2. Nahrávání vzorků"
+        subheader={`WAV · 16 kHz · mono · 16-bit PCM · ${durationS.toFixed(1)} s`}
+        action={
+          <Chip
+            color={positiveCount >= 20 ? "success" : "default"}
+            label={`${positiveCount} / ${RECOMMENDED} vzorků`}
+            variant={positiveCount >= 20 ? "filled" : "outlined"}
+          />
+        }
+      />
+      <CardContent>
+        <Stack spacing={2}>
+          <Box>
+            <LinearProgress variant="determinate" value={progress} sx={{ height: 8, borderRadius: 4 }} />
+            <Typography variant="caption" color="text.secondary">
+              Doporučeno alespoň 20–40 nahrávek wake wordu, ideálně od více lidí, z různé vzdálenosti a s různou intonací.
+            </Typography>
+          </Box>
+
+          <Tabs value={kind} onChange={(_, v) => setKind(v)} variant="fullWidth">
+            <Tab value="positive" label={`Wake word „${wakeWord}“ (${items.positive.length})`} />
+            <Tab value="negative" label={`Negativní – jiná řeč / hluk (${items.negative.length})`} />
+          </Tabs>
+
+          {kind === "negative" && (
+            <Alert severity="info" variant="outlined">
+              Volitelné: nahrajte několik vzorků běžné řeči, podobných slov nebo hluku z místa, kde bude zařízení stát. Model se tak naučí,
+              na co nereagovat. Základní negativní data se stáhnou automaticky.
+            </Alert>
+          )}
+
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={3} alignItems="center">
+            <Box sx={{ position: "relative", display: "inline-flex" }}>
+              <CircularProgress
+                variant="determinate"
+                value={phase === "recording" ? (elapsed / durationS) * 100 : 0}
+                size={120}
+                thickness={3}
+                sx={{ color: phase === "recording" ? theme.palette.error.main : theme.palette.divider, position: "absolute", inset: 0 }}
+              />
+              <IconButton
+                onClick={series ? stopSeries : recordSingle}
+                disabled={disabled || (busy && !series)}
+                sx={{
+                  width: 120,
+                  height: 120,
+                  bgcolor: phase === "recording" ? "error.main" : "primary.main",
+                  color: phase === "recording" ? "error.contrastText" : "primary.contrastText",
+                  "&:hover": { bgcolor: phase === "recording" ? "error.dark" : "primary.dark" },
+                  "&.Mui-disabled": { bgcolor: "action.disabledBackground" },
+                  transform: phase === "recording" ? `scale(${1 + level * 0.08})` : "none",
+                  transition: "transform 80ms linear",
+                  fontSize: 44,
+                  fontWeight: 700,
+                }}
+              >
+                {phase === "countdown" ? countdown : phase === "uploading" ? <CircularProgress size={36} color="inherit" /> : series ? <StopIcon sx={{ fontSize: 48 }} /> : <MicIcon sx={{ fontSize: 52 }} />}
+              </IconButton>
+            </Box>
+            <Box sx={{ flex: 1, width: "100%" }}>
+              <Typography variant="h6">
+                {phase === "idle" && (kind === "positive" ? `Řekněte „${wakeWord}“ – ${hint}` : "Mluvte nebo nechte znít hluk")}
+                {phase === "prepare" && "Připravuji mikrofon…"}
+                {phase === "countdown" && `Připravte se… ${countdown}`}
+                {phase === "recording" && `Nahrávám… ${remaining.toFixed(1)} s`}
+                {phase === "uploading" && "Ukládám…"}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                {series
+                  ? `Série: ${series.done} / ${series.total} hotovo. Klikněte na tlačítko nebo stiskněte Esc pro zastavení.`
+                  : "Klikněte na tlačítko nebo stiskněte mezerník. Nahrávka trvá přesně " + durationS.toFixed(1) + " s – slovo řekněte zhruba uprostřed."}
+              </Typography>
+              <LinearProgress variant="determinate" value={level * 100} color={level > 0.9 ? "error" : "success"} sx={{ height: 10, borderRadius: 5, mb: 1 }} />
+              {lastPeaks && <Waveform peaks={lastPeaks} color={theme.palette.primary.main} height={40} />}
+            </Box>
+          </Stack>
+
+          <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }} flexWrap="wrap" useFlexGap>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <TextField
+                select
+                size="small"
+                label="Série"
+                value={seriesSize}
+                onChange={(e) => setSeriesSize(Number(e.target.value))}
+                sx={{ minWidth: 110 }}
+                disabled={busy}
+              >
+                {[5, 10, 20, 30].map((n) => (
+                  <MenuItem key={n} value={n}>
+                    {n} nahrávek
+                  </MenuItem>
+                ))}
+              </TextField>
+              <Button variant="outlined" startIcon={<RepeatIcon />} onClick={recordSeries} disabled={disabled || busy}>
+                Nahrát sérii s odpočtem
+              </Button>
+            </Stack>
+            <FormControlLabel control={<Switch checked={autoPlay} onChange={(e) => setAutoPlay(e.target.checked)} />} label="Přehrát po nahrání" />
+            <TextField
+              select
+              size="small"
+              label="Mikrofon"
+              value={deviceId}
+              onChange={(e) => setDeviceId(e.target.value)}
+              sx={{ minWidth: 220 }}
+              disabled={busy}
+            >
+              <MenuItem value="">Výchozí mikrofon</MenuItem>
+              {devices.map((d) => (
+                <MenuItem key={d.deviceId} value={d.deviceId}>
+                  {d.label}
+                </MenuItem>
+              ))}
+            </TextField>
+            <input ref={fileInputRef} type="file" accept="audio/*,.wav" multiple hidden onChange={(e) => e.target.files && importFiles(e.target.files)} />
+            <Button variant="text" startIcon={<UploadFileIcon />} onClick={() => fileInputRef.current?.click()} disabled={disabled || !!importing}>
+              {importing ? `Importuji ${importing.done}/${importing.total}` : "Importovat soubory"}
+            </Button>
+          </Stack>
+
+          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Button size="small" startIcon={playAll ? <StopIcon /> : <PlaylistPlayIcon />} onClick={playEverything} disabled={list.length === 0}>
+              {playAll ? "Zastavit" : "Přehrát vše"}
+            </Button>
+            <Button
+              size="small"
+              color="error"
+              startIcon={<DeleteSweepIcon />}
+              onClick={() => removeMany(kind, [...selected])}
+              disabled={disabled || selected.size === 0}
+            >
+              Smazat označené ({selected.size})
+            </Button>
+            {problems > 0 && (
+              <Tooltip title="Nahrávky s varováním nejsou automaticky vyloučeny – poslechněte si je a špatné smažte.">
+                <Chip icon={<WarningAmberIcon />} color="warning" variant="outlined" size="small" label={`${problems} s varováním`} onClick={() => setSelected(new Set(list.filter((r) => r.quality.issues.length).map((r) => r.id)))} />
+              </Tooltip>
+            )}
+            <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
+              Soubory lze také přetáhnout myší sem.
+            </Typography>
+          </Stack>
+
+          <Box sx={{ maxHeight: 360, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 2 }}>
+            {list.length === 0 && (
+              <Typography sx={{ p: 2 }} color="text.secondary">
+                Zatím žádné nahrávky. Nahrané vzorky se ukládají do složky /data na serveru.
+              </Typography>
+            )}
+            {[...list].reverse().map((rec, idx) => {
+              const isPlaying = playing?.id === rec.id;
+              return (
+                <Stack
+                  key={rec.id}
+                  direction="row"
+                  spacing={1}
+                  alignItems="center"
+                  sx={{
+                    px: 1,
+                    py: 0.5,
+                    borderBottom: idx < list.length - 1 ? 1 : 0,
+                    borderColor: "divider",
+                    bgcolor: isPlaying ? "action.selected" : selected.has(rec.id) ? "action.hover" : "transparent",
+                  }}
+                >
+                  <Checkbox size="small" checked={selected.has(rec.id)} onChange={() => toggleSelected(rec.id)} disabled={disabled} />
+                  <IconButton size="small" onClick={() => togglePlay(rec)} color={isPlaying ? "primary" : "default"}>
+                    {isPlaying ? <StopIcon /> : <PlayArrowIcon />}
+                  </IconButton>
+                  <Box sx={{ width: 140, cursor: "pointer" }} onClick={() => togglePlay(rec)}>
+                    <Waveform peaks={rec.peaks} color={isPlaying ? theme.palette.primary.main : theme.palette.text.secondary} height={28} progress={isPlaying ? playing?.progress : undefined} />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="body2" noWrap>
+                      #{list.length - idx} · {rec.duration.toFixed(2)} s · {new Date(rec.created).toLocaleTimeString()}
+                    </Typography>
+                    <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                      {rec.quality.issues.map((issue) => (
+                        <Tooltip key={issue} title={ISSUE_LABELS[issue]?.hint ?? issue}>
+                          <Chip size="small" color="warning" variant="outlined" label={ISSUE_LABELS[issue]?.label ?? issue} sx={{ height: 20, fontSize: 11 }} />
+                        </Tooltip>
+                      ))}
+                      {rec.quality.issues.length === 0 && (
+                        <Typography variant="caption" color="text.secondary">
+                          špička {Math.round((rec.quality.peak ?? 0) * 100)} % · {rec.quality.rms_db} dB
+                        </Typography>
+                      )}
+                    </Stack>
+                  </Box>
+                  <Tooltip title="Smazat (lze vrátit)">
+                    <span>
+                      <IconButton size="small" onClick={() => removeMany(rec.kind, [rec.id])} disabled={disabled}>
+                        <DeleteIcon />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Stack>
+              );
+            })}
+          </Box>
+        </Stack>
+      </CardContent>
+      <Snackbar
+        open={!!undo}
+        autoHideDuration={8000}
+        onClose={() => setUndo(null)}
+        message={undo ? `Smazáno: ${undo.ids.length === 1 ? "1 nahrávka" : `${undo.ids.length} nahrávek`}` : ""}
+        action={
+          <Button color="primary" size="small" onClick={restore}>
+            Vrátit zpět
+          </Button>
+        }
+      />
+    </Card>
+  );
+}
+
+function Waveform({ peaks, color, height, progress }: { peaks: number[]; color: string; height: number; progress?: number }) {
+  const max = Math.max(0.05, ...peaks);
+  return (
+    <Box sx={{ position: "relative", display: "flex", alignItems: "center", gap: "1px", height }}>
+      {peaks.map((p, i) => {
+        const played = progress !== undefined && i / peaks.length <= progress;
+        return <Box key={i} sx={{ flex: 1, height: `${Math.max(6, (p / max) * 100)}%`, bgcolor: color, borderRadius: 1, opacity: played ? 1 : progress !== undefined ? 0.35 : 0.75 }} />;
+      })}
+    </Box>
+  );
+}
