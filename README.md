@@ -19,7 +19,15 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 # …nebo: cp .env.example .env  (obsahuje COMPOSE_FILE=…gpu.yml) a pak stačí `docker compose up --build`
 ```
 
-Aplikace běží na <http://localhost:8000>. Všechna data (nahrávky, datasety, modely) jsou ve svazku `./data`.
+Aplikace běží na <http://localhost:8000>. Všechna data (nahrávky, datasety, modely) jsou ve svazku `./data`
+(kontejner běží jako root, soubory v `./data` proto patří rootovi – k úklidu použijte `sudo rm` nebo
+`docker compose exec app rm -rf /data/jobs/...`).
+
+**WSL2 + NVIDIA:** stačí nainstalovaný Windows ovladač NVIDIA a v Docker Desktopu (nebo Docker Engine ve WSL)
+`nvidia-container-toolkit`. Ověření: `docker compose exec app python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"`.
+Bez GPU trénink také funguje – tento model je malý (~30 k parametrů), na CPU trvá výchozích 4 000 kroků řádově
+jednotky až nižší desítky minut. První trénink navíc jednorázově předpočítá spektrogramy negativního datasetu
+(cca 1–2 min, výsledek se ukládá do `data/features_cache`).
 
 > Mikrofon v prohlížeči funguje jen v „secure context“ – tedy na `localhost` nebo přes HTTPS.
 > Pokud k aplikaci přistupujete z jiného počítače v síti, použijte HTTPS reverse proxy nebo SSH tunel
@@ -41,7 +49,8 @@ Volitelně lze nastavit HTTP Basic auth proměnnými `APP_USER` / `APP_PASSWORD`
 4. **Trénování** – spustí pipeline: augmentace pozitivních vzorků → spektrogramy (microWakeWord micro-frontend)
    → syntetický šum + ambientní záznam pro odhad falešných aktivací → trénink MixedNet → kvantizace a konverze
    na streamovaný `.tflite`. Průběh (kroky, loss, přesnost, validace, log) se zobrazuje živě.
-5. **Stažení** – po dokončení stáhnete `<wakeword>.tflite` a manifest JSON pro ESPHome.
+5. **Stažení** – po dokončení stáhnete `<wakeword>.tflite` a manifest JSON pro ESPHome. `probability_cutoff`
+   v manifestu se odvodí z ROC křivky na testovací sadě (omezeno na 0.6–0.97) a lze jej ručně doladit.
 
 ## Použití v ESPHome
 
