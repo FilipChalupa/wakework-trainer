@@ -9,6 +9,7 @@ import argparse
 import json
 import os
 import random
+import re
 import runpy
 import shutil
 import sys
@@ -164,9 +165,17 @@ def prepare_positives(job: dict, writer: FeatureWriter, features_dir: Path, back
     return clip_ms, len(splits["train"])
 
 
-def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
+def list_speech_commands(job: dict) -> list[Path]:
     dataset_dir = Path(job["datasets_dir"]) / "mini_speech_commands"
-    wavs = sorted(p for p in dataset_dir.rglob("*.wav") if "_background_noise_" not in p.parts)
+    return sorted(
+        p
+        for p in dataset_dir.rglob("*.wav")
+        if "_background_noise_" not in p.parts and "__MACOSX" not in p.parts and not p.name.startswith("._")
+    )
+
+
+def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
+    wavs = list_speech_commands(job)
     if not wavs:
         log("mini_speech_commands not found - training without generic speech negatives (model quality will suffer)")
         return None
@@ -214,8 +223,7 @@ def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_
 def prepare_ambient(job: dict, writer: FeatureWriter, features_dir: Path, noise_files: list[Path], minutes: float = 4.0) -> Path:
     from microwakeword.audio.audio_utils import generate_features_for_clip
 
-    dataset_dir = Path(job["datasets_dir"]) / "mini_speech_commands"
-    speech = sorted(p for p in dataset_dir.rglob("*.wav") if "_background_noise_" not in p.parts)
+    speech = list_speech_commands(job)
     user_negatives = sorted(Path(job["negative_dir"]).glob("*.wav"))
     out_dir = features_dir / "ambient"
     for set_name, seed in (("validation_ambient", 7), ("testing_ambient", 11)):
@@ -298,7 +306,39 @@ def run_microwakeword(config_path: Path) -> None:
         sys.argv = old_argv
 
 
-def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, final_metrics: str | None) -> None:
+def parse_roc(text: str) -> tuple[float | None, list[dict]]:
+    """Parses microWakeWord's tflite_streaming_roc.txt (AUC + points on the FAPH/FRR curve)."""
+    auc = None
+    points = []
+    for line in text.splitlines():
+        m = re.match(r"AUC ([\d.]+)", line)
+        if m:
+            auc = float(m.group(1))
+            continue
+        m = re.match(r"Cutoff ([\d.]+): frr=([\d.]+); faph=([\d.]+)", line)
+        if m:
+            points.append({"cutoff": float(m.group(1)), "frr": float(m.group(2)), "faph": float(m.group(3))})
+    return auc, points
+
+
+def summarize_roc(auc: float | None, points: list[dict]) -> tuple[str | None, float]:
+    """Returns (human readable summary, suggested probability cutoff for the ESPHome manifest)."""
+    cutoff = 0.97
+    if not points:
+        return None, cutoff
+    clean = [p for p in points if p["faph"] <= 0.5] or [min(points, key=lambda p: p["faph"])]
+    best = min(clean, key=lambda p: (p["frr"], -p["cutoff"]))
+    cutoff = float(min(0.97, max(0.6, round(best["cutoff"] + 0.05, 2))))
+    summary = (
+        f"cutoff {best['cutoff']:.2f}: falešná odmítnutí {best['frr'] * 100:.0f} %, "
+        f"falešné aktivace {best['faph']:.2f}/h (testovací sada)"
+    )
+    if auc is not None:
+        summary = f"AUC {auc:.3f}; " + summary
+    return summary, cutoff
+
+
+def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, probability_cutoff: float) -> None:
     manifest = {
         "type": "micro",
         "wake_word": job["wake_word"],
@@ -308,7 +348,7 @@ def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, fina
         "trained_languages": ["cs"],
         "version": 2,
         "micro": {
-            "probability_cutoff": 0.97,
+            "probability_cutoff": probability_cutoff,
             "sliding_window_size": 5,
             "feature_step_size": 10,
             "tensor_arena_size": 30000,
@@ -377,8 +417,11 @@ def main() -> int:
     model_name = f"{job['slug']}.tflite"
     shutil.copyfile(tflite, job_dir / model_name)
     roc = train_dir / "tflite_stream_state_internal_quant" / "tflite_streaming_roc.txt"
-    final_metrics = roc.read_text().strip() if roc.exists() else None
-    write_manifest(job, job_dir, clip_ms, model_name, final_metrics)
+    summary, cutoff = summarize_roc(*parse_roc(roc.read_text())) if roc.exists() else (None, 0.97)
+    if summary:
+        emit("final_metrics", summary=summary)
+    log(f"Manifest probability_cutoff set to {cutoff:.2f} (tune it in the JSON manifest if the word triggers too easily / too rarely)")
+    write_manifest(job, job_dir, clip_ms, model_name, cutoff)
     # free disk: the per-job feature mmaps are large and only needed during training
     shutil.rmtree(features_dir, ignore_errors=True)
     emit("done", message=f"Model {model_name} ({(job_dir / model_name).stat().st_size // 1024} kB) hotov za {(time.time() - started) / 60:.1f} min")

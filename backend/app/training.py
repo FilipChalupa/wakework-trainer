@@ -350,6 +350,8 @@ class JobManager:
             self._log(str(ev.get("message", "")))
         elif kind == "training_config":
             self._update(total_steps=int(ev.get("total_steps", 0)), eval_step_interval=int(ev.get("eval_step_interval", 1)))
+        elif kind == "final_metrics":
+            self._update(final_metrics=str(ev.get("summary", "")))
         elif kind == "done":
             self._update(stage="Hotovo", message=ev.get("message"))
 

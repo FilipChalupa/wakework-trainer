@@ -59,7 +59,7 @@ def is_installed(name: str) -> bool:
     if not path.is_dir():
         return False
     if DATASETS[name]["type"] == "audio":
-        return any(path.rglob("*.wav"))
+        return any(p for p in path.rglob("*.wav") if not p.name.startswith("._"))
     return any(path.rglob("*_mmap"))
 
 
@@ -115,6 +115,8 @@ def download(name: str, progress: Callable[[dict], None] | None = None) -> None:
             else:
                 zf.extractall(target)
         tmp_zip.unlink(missing_ok=True)
+        for junk in target.rglob("__MACOSX"):
+            shutil.rmtree(junk, ignore_errors=True)
         if not is_installed(name):
             raise RuntimeError("Archive extracted but expected files were not found")
         _set(name, state="done")

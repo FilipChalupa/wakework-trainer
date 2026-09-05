@@ -13,7 +13,6 @@ FROM python:3.11-slim AS backend
 ARG TENSORFLOW_PACKAGE="tensorflow==2.19.0"
 
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     DATA_DIR=/data \
     TF_CPP_MIN_LOG_LEVEL=2
@@ -24,9 +23,19 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY backend/requirements.txt ./
-RUN pip install --upgrade pip \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip \
     && pip install "${TENSORFLOW_PACKAGE}" \
     && pip install -r requirements.txt
+
+# microWakeWord itself: editable install from a pinned git checkout (its sub-packages have no __init__.py,
+# so a regular wheel build would silently drop microwakeword.audio / microwakeword.layers)
+ARG MICROWAKEWORD_REF=4665173cd35f1cff9a61e06fc427f124766c488e
+RUN git clone https://github.com/kahrendt/microWakeWord /opt/microWakeWord \
+    && git -C /opt/microWakeWord checkout --quiet "${MICROWAKEWORD_REF}" \
+    && touch /opt/microWakeWord/microwakeword/audio/__init__.py /opt/microWakeWord/microwakeword/layers/__init__.py \
+    && pip install --no-deps -e /opt/microWakeWord \
+    && python -c "import microwakeword.audio.augmentation, microwakeword.layers.modes, microwakeword.model_train_eval"
 
 COPY backend/ ./
 COPY --from=frontend /app/dist ./static

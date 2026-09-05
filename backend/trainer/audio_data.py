@@ -34,7 +34,7 @@ def peak_normalize(audio: np.ndarray, target: float = 0.7) -> np.ndarray:
     return (audio * (target / peak)).astype(np.float32)
 
 
-def trim_silence(audio: np.ndarray, threshold_db: float = -38.0, pad_ms: int = 120, frame: int = 160) -> np.ndarray:
+def trim_silence(audio: np.ndarray, threshold_db: float = -32.0, pad_ms: int = 120, frame: int = 160) -> np.ndarray:
     """Energy based trimming of leading/trailing silence relative to the loudest frame."""
     if audio.shape[0] < frame * 4:
         return audio
@@ -93,10 +93,10 @@ class WavClips:
         cached = self._cache.get(path)
         if cached is None:
             audio = load_wav(path)
-            if self.trim:
-                audio = trim_silence(audio)
             if self.normalize:
                 audio = peak_normalize(audio)
+            if self.trim:
+                audio = trim_silence(audio)
             cached = audio
             if self.use_cache:
                 self._cache[path] = cached

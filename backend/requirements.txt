@@ -16,4 +16,4 @@ mmap_ninja>=0.9.0
 webrtcvad-wheels>=2.0.14
 # audio-metadata fork that unpins attrs (same fork microWakeWord's notebook uses)
 audio-metadata @ git+https://github.com/whatsnowplaying/audio-metadata@d4ebb238e6a401bb1a5aaaac60c9e2b3cb30929f
-microwakeword @ git+https://github.com/kahrendt/microWakeWord@4665173cd35f1cff9a61e06fc427f124766c488e
+# microwakeword is installed from a git clone in the Dockerfile (editable install: its sub-packages lack __init__.py)

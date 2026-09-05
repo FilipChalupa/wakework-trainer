@@ -47,7 +47,14 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                 {jobs.map((job) => (
                   <TableRow key={job.job_id} hover>
                     <TableCell>{new Date(job.created_at).toLocaleString()}</TableCell>
-                    <TableCell>{job.wake_word}</TableCell>
+                    <TableCell>
+                      {job.wake_word}
+                      {job.final_metrics && (
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {job.final_metrics}
+                        </Typography>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Chip size="small" label={job.status} color={COLORS[job.status] ?? "default"} />
                     </TableCell>
