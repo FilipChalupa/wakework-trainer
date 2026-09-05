@@ -96,6 +96,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const recorderRef = useRef(new Recorder());
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const stopSeriesRef = useRef(false);
+  const playAllRef = useRef(false);
   const busyRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -151,6 +152,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const togglePlay = (rec: Recording) => {
     if (playing?.id === rec.id) {
       stopPlayback();
+      playAllRef.current = false;
       setPlayAll(false);
       return;
     }
@@ -159,21 +161,20 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
 
   const playEverything = async () => {
     if (playAll) {
+      playAllRef.current = false;
       setPlayAll(false);
       stopPlayback();
       return;
     }
     setPlayAll(true);
-    const list = [...items[kind]];
-    for (const rec of list) {
-      if (!audioRef.current && rec !== list[0] && playing === null && !playAllRef.current) break;
-      await playOne(rec);
+    playAllRef.current = true;
+    for (const rec of [...items[kind]]) {
       if (!playAllRef.current) break;
+      await playOne(rec);
     }
+    playAllRef.current = false;
     setPlayAll(false);
   };
-  const playAllRef = useRef(false);
-  playAllRef.current = playAll;
 
   // ----- recording ----------------------------------------------------------
   const captureOne = useCallback(
@@ -264,6 +265,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
         recordSingle();
       } else if (e.key === "Escape") {
         stopSeriesRef.current = true;
+        playAllRef.current = false;
         setPlayAll(false);
         stopPlayback();
       }

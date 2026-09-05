@@ -176,14 +176,13 @@ def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
         log(f"Using cached speech negative features from {cache_dir}")
         return cache_dir
     splits = stable_split(wavs, validation=0.1, test=0.1)
-    clips = WavClips(splits, trim=False)
+    clips = WavClips(splits, trim=False, cache=False)
     plan = [("training", "train", 1), ("validation", "validation", 1), ("testing", "test", 1)]
     for set_name, split, repeat in plan:
         expected = len(splits[split]) * repeat
         stage("Příprava dat", f"Spektrogramy negativní řeči ({set_name}, {expected} klipů)", current=0, total=expected)
         augmenter = make_augmenter(2.0, [], positive=False, seed=42)
         writer.write(cache_dir / set_name / "speech_mmap", spectrogram_generator(clips, augmenter, split, repeat, None), expected, f"speech/{set_name}")
-        clips._cache.clear()
     marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
     return cache_dir
 

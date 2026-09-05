@@ -66,9 +66,12 @@ def analyze(path: Path) -> dict:
     if n:
         frame = max(1, sr // 100)
         frames = audio[: (n // frame) * frame].reshape(-1, frame)
-        frame_rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
-        threshold = max(frame_rms.max() * 10 ** (-30 / 20), 0.004)
-        active = np.where(frame_rms > threshold)[0]
+        if frames.size:
+            frame_rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
+            threshold = max(frame_rms.max() * 10 ** (-30 / 20), 0.004)
+            active = np.where(frame_rms > threshold)[0]
+        else:
+            active = np.array([], dtype=int)
         if active.size:
             speech_start = float(active[0] * frame / sr)
             speech_end = float((active[-1] + 1) * frame / sr)

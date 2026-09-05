@@ -81,10 +81,11 @@ def stable_split(paths: list[Path], validation: float = 0.1, test: float = 0.1) 
 class WavClips:
     """Minimal drop-in replacement for microwakeword.audio.clips.Clips backed by soundfile."""
 
-    def __init__(self, splits: dict[str, list[Path]], trim: bool = False, normalize: bool = True):
+    def __init__(self, splits: dict[str, list[Path]], trim: bool = False, normalize: bool = True, cache: bool = True):
         self.splits = splits
         self.trim = trim
         self.normalize = normalize
+        self.use_cache = cache
         self.clips = sorted({p for v in splits.values() for p in v})
         self._cache: dict[Path, np.ndarray] = {}
 
@@ -97,7 +98,8 @@ class WavClips:
             if self.normalize:
                 audio = peak_normalize(audio)
             cached = audio
-            self._cache[path] = cached
+            if self.use_cache:
+                self._cache[path] = cached
         return cached
 
     def durations(self, split: str = "train") -> list[float]:
