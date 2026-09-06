@@ -5,6 +5,8 @@ const EMPTY: TrainingState = {
   status: "idle",
   job_id: null,
   project_id: null,
+  label: "",
+  queue: [],
   wake_word: null,
   stage: null,
   stage_key: null,
@@ -50,6 +52,10 @@ export function useTrainingStream() {
       source.addEventListener("state", (e) => {
         const partial = JSON.parse((e as MessageEvent).data) as Partial<TrainingState>;
         setState((prev) => ({ ...prev, ...partial }));
+      });
+      source.addEventListener("queue", (e) => {
+        const { queue } = JSON.parse((e as MessageEvent).data) as { queue: TrainingState["queue"] };
+        setState((prev) => ({ ...prev, queue }));
       });
       source.addEventListener("log", (e) => {
         const { line } = JSON.parse((e as MessageEvent).data) as { line: string };

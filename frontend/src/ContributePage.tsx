@@ -58,7 +58,7 @@ export function ContributePage() {
           </Select>
         </Toolbar>
       </AppBar>
-      <Container maxWidth="md" sx={{ py: 3 }}>
+      <Container maxWidth="sm" sx={{ py: { xs: 1.5, sm: 3 }, px: { xs: 1, sm: 3 } }}>
         <Stack spacing={3}>
           {invalid && <Alert severity="error">{t("contrib.invalid")}</Alert>}
           {info && !name && (

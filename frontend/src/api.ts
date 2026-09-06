@@ -59,6 +59,7 @@ export type Recording = {
   url: string;
   contributor: string | null;
   tag: Tag | null;
+  review: boolean;
   peaks: number[];
   quality: {
     peak?: number;
@@ -109,6 +110,8 @@ export type TrainingState = {
   status: "idle" | "downloading" | "preparing" | "training" | "converting" | "done" | "failed" | "cancelled" | "interrupted";
   job_id: string | null;
   project_id: string | null;
+  label: string;
+  queue: QueuedRun[];
   wake_word: string | null;
   stage: string | null;
   stage_key: string | null;
@@ -133,9 +136,17 @@ export type TrainingState = {
   log_tail?: string[];
 };
 
+export type QueuedRun = { id: string; project_id: string; overrides: Partial<TrainingParams>; label: string; queued_at: string };
+
+export type MonitorItem = Recording & { job_id?: string };
+export type DeviceEvent = { at: string; device: string; wake_word: string; esphome_version: string; probability: number | null };
+export type PublicUrls = { token: string; manifest_url: string; model_url: string; device_event_url: string; has_model: boolean; job_id: string | null; minimum_esphome_version: string; snippet: string };
+
 export type Job = {
   job_id: string;
   wake_word: string;
+  label: string;
+  overrides: Partial<TrainingParams>;
   slug: string;
   created_at: string;
   finished_at: string | null;
@@ -193,6 +204,7 @@ export type EvaluationItem = {
   url: string;
   tag: Tag | null;
   contributor: string | null;
+  outlier: boolean;
   max_probability: number | null;
   detections: number;
   error?: string;
@@ -208,6 +220,8 @@ export type Evaluation = {
     negative_total: number;
     negative_triggered: number;
     by_tag: Record<string, { total: number; detected: number }>;
+    outliers: number;
+    median_positive: number;
   };
 };
 
@@ -242,7 +256,20 @@ export const api = {
   listDatasets: () => request<{ items: Dataset[] }>("/api/datasets"),
   downloadDataset: (id: string) => request<unknown>(`/api/datasets/${id}/download`, { method: "POST" }),
   deleteDataset: (id: string) => request<unknown>(`/api/datasets/${id}`, { method: "DELETE" }),
-  startTraining: () => request<TrainingState>("/api/train", { method: "POST" }),
+  startTraining: (overrides?: Partial<TrainingParams>, label?: string) =>
+    request<TrainingState>("/api/train", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ training: overrides ?? {}, label: label ?? "" }) }),
+  startSweep: (param: keyof TrainingParams, values: number[], label?: string) =>
+    request<TrainingState>("/api/train/sweep", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ param, values, label }) }),
+  dropQueued: (id: string) => request<{ queue: QueuedRun[] }>(`/api/train/queue/${id}`, { method: "DELETE" }),
+  setReview: (kind: string, id: string, review: boolean) =>
+    request<Recording>(`/api/recordings/${kind}/${id}/review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ review }) }),
+  listMonitor: () => request<{ items: MonitorItem[] }>("/api/monitor"),
+  monitorToNegative: (id: string) => request<Recording>(`/api/monitor/${id}/negative`, { method: "POST" }),
+  deleteMonitor: (id: string) => request<{ deleted: string }>(`/api/monitor/${id}`, { method: "DELETE" }),
+  clearMonitor: () => request<{ deleted: number }>("/api/monitor", { method: "DELETE" }),
+  deviceEvents: (since?: string) => request<{ items: DeviceEvent[]; minimum_esphome_version: string; outdated_versions: string[]; now: string }>(`/api/monitor/device-events${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+  publicUrls: (projectId: string) => request<PublicUrls>(`/api/projects/${projectId}/public-urls`),
+  bundleUrl: (ids?: string[]) => `/api/bundle${ids && ids.length ? `?projects=${ids.join(",")}` : ""}`,
   resumeTraining: () => request<TrainingState>("/api/train/resume", { method: "POST" }),
   listProjects: () => request<{ items: ProjectSummary[]; current: string }>("/api/projects"),
   createProject: (name: string, wakeWord: string) =>

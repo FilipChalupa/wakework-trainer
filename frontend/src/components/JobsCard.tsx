@@ -4,6 +4,7 @@ import DownloadIcon from "@mui/icons-material/Download";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { useState } from "react";
 import CompareArrowsIcon from "@mui/icons-material/CompareArrows";
+import Inventory2Icon from "@mui/icons-material/Inventory2";
 import { Checkbox } from "@mui/material";
 import { api, type Job } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
@@ -36,13 +37,20 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
         title={t("jobs.title")}
         subheader={t("jobs.subtitle")}
         action={
-          <Tooltip title={t("compare.pick")}>
-            <span>
-              <Button size="small" startIcon={<CompareArrowsIcon />} onClick={() => setCompareOpen(true)} disabled={!pair || pair.length < 2}>
-                {t("compare.title")} ({selected.length}/2)
+          <Stack direction="row" spacing={1}>
+            <Tooltip title={t("jobs.bundleHelp")}>
+              <Button size="small" startIcon={<Inventory2Icon />} href={api.bundleUrl()} download>
+                {t("jobs.bundle")}
               </Button>
-            </span>
-          </Tooltip>
+            </Tooltip>
+            <Tooltip title={t("compare.pick")}>
+              <span>
+                <Button size="small" startIcon={<CompareArrowsIcon />} onClick={() => setCompareOpen(true)} disabled={!pair || pair.length < 2}>
+                  {t("compare.title")} ({selected.length}/2)
+                </Button>
+              </span>
+            </Tooltip>
+          </Stack>
         }
       />
       <CardContent>
@@ -64,12 +72,31 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {jobs.map((job) => (
+                {jobs.map((job, idx) => {
+                  const previous = jobs[idx + 1];
+                  const diff = previous?.training && job.training
+                    ? (Object.keys(job.training) as (keyof typeof job.training)[]).filter((k) => String(job.training[k]) !== String(previous.training[k])).map((k) => `${k}: ${previous.training[k]} → ${job.training[k]}`)
+                    : [];
+                  return (
                   <TableRow key={job.job_id} hover selected={selected.includes(job.job_id)}>
                     <TableCell padding="checkbox">
                       <Checkbox size="small" checked={selected.includes(job.job_id)} onChange={() => toggle(job.job_id)} disabled={job.status !== "done"} />
                     </TableCell>
-                    <TableCell>{new Date(job.created_at).toLocaleString()}</TableCell>
+                    <TableCell>
+                      {new Date(job.created_at).toLocaleString()}
+                      {job.label && (
+                        <Typography variant="caption" display="block" color="primary">
+                          {job.label}
+                        </Typography>
+                      )}
+                      {diff.length > 0 && (
+                        <Tooltip title={t("jobs.diff", { diff: diff.join("; ") })}>
+                          <Typography variant="caption" display="block" color="text.secondary" noWrap sx={{ maxWidth: 220 }}>
+                            Δ {diff.map((d) => d.split(":")[0]).join(", ")}
+                          </Typography>
+                        </Tooltip>
+                      )}
+                    </TableCell>
                     <TableCell>
                       {job.wake_word}
                       {job.final_metrics && (
@@ -121,7 +148,8 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                       </Tooltip>
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
               </TableBody>
             </Table>
           </Box>

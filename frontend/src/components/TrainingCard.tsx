@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, Collapse, FormControlLabel, LinearProgress, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, Collapse, Dialog, DialogActions, DialogContent, DialogTitle, FormControlLabel, IconButton, LinearProgress, MenuItem, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography } from "@mui/material";
+import QueueIcon from "@mui/icons-material/Queue";
+import DeleteIcon from "@mui/icons-material/Delete";
+import type { TrainingParams } from "../api";
 import ModelTrainingIcon from "@mui/icons-material/ModelTraining";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
@@ -48,6 +51,11 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
   const { t } = useI18n();
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [label, setLabel] = useState("");
+  const [sweepOpen, setSweepOpen] = useState(false);
+  const [sweepParam, setSweepParam] = useState<keyof TrainingParams>("training_steps");
+  const [sweepValues, setSweepValues] = useState("2000, 4000, 8000");
+  const sweepList = sweepValues.split(/[,\s]+/).map(Number).filter((v) => !Number.isNaN(v));
   const logRef = useRef<HTMLDivElement | null>(null);
   const prevStatus = useRef(state.status);
   const [notify, setNotify] = useState<boolean>(() => {
@@ -100,12 +108,34 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
   const start = async () => {
     setBusy(true);
     try {
-      await api.startTraining();
+      await api.startTraining({}, label);
+      setLabel("");
       setShowLog(true);
     } catch (e) {
       onError(errorText(t, e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const startSweep = async () => {
+    setBusy(true);
+    try {
+      await api.startSweep(sweepParam, sweepList, label || undefined);
+      setSweepOpen(false);
+      setShowLog(true);
+    } catch (e) {
+      onError(errorText(t, e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dropQueued = async (id: string) => {
+    try {
+      await api.dropQueued(id);
+    } catch (e) {
+      onError(errorText(t, e));
     }
   };
 
@@ -162,7 +192,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
             </Alert>
           )}
 
-          <Stack direction="row" spacing={2} alignItems="center">
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ sm: "center" }}>
             {!running ? (
               <Button variant="contained" size="large" startIcon={<PlayArrowIcon />} onClick={start} disabled={busy || positiveCount < 3}>
                 {t("train.start")}
@@ -172,8 +202,19 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                 {t("train.cancel")}
               </Button>
             )}
+            <TextField size="small" label={t("jobs.label")} value={label} onChange={(e) => setLabel(e.target.value)} sx={{ minWidth: 160 }} disabled={busy} />
+            <Tooltip title={t("sweep.help")}>
+              <span>
+                <Button startIcon={<QueueIcon />} onClick={() => setSweepOpen(true)} disabled={busy || positiveCount < 3}>
+                  {t("sweep.button")}
+                </Button>
+              </span>
+            </Tooltip>
             <Box sx={{ flex: 1 }}>
-              <Typography variant="subtitle2">{stageText ?? t("train.waiting")}</Typography>
+              <Typography variant="subtitle2">
+                {stageText ?? t("train.waiting")}
+                {running && state.label ? ` · ${state.label}` : ""}
+              </Typography>
               <Typography variant="body2" color="text.secondary">
                 {messageText ?? t("train.wakeWord", { word: state.wake_word ?? wakeWord })}
               </Typography>
@@ -245,6 +286,34 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                   ))}
                 </TableBody>
               </Table>
+            </Box>
+          )}
+
+          {state.queue.length > 0 && (
+            <Box sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
+              <Typography variant="subtitle2" gutterBottom>
+                {t("queue.title", { n: state.queue.length })}
+              </Typography>
+              <Stack spacing={0.5}>
+                {state.queue.map((q, i) => (
+                  <Stack key={q.id} direction="row" spacing={1} alignItems="center">
+                    <Chip size="small" label={i + 1} />
+                    <Typography variant="body2" sx={{ flex: 1 }}>
+                      {q.label || "–"}{" "}
+                      <Typography component="span" variant="caption" color="text.secondary">
+                        {Object.entries(q.overrides)
+                          .map(([k, v]) => `${k}=${v}`)
+                          .join(", ")}
+                      </Typography>
+                    </Typography>
+                    <Tooltip title={t("queue.remove")}>
+                      <IconButton size="small" onClick={() => dropQueued(q.id)}>
+                        <DeleteIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  </Stack>
+                ))}
+              </Stack>
             </Box>
           )}
 
@@ -347,6 +416,31 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
           </Box>
         </Stack>
       </CardContent>
+      <Dialog open={sweepOpen} onClose={() => setSweepOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{t("sweep.title")}</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            <Typography variant="body2" color="text.secondary">
+              {t("sweep.help")}
+            </Typography>
+            <TextField select label={t("sweep.param")} value={sweepParam} onChange={(e) => setSweepParam(e.target.value as keyof TrainingParams)}>
+              {(["training_steps", "learning_rate", "negative_class_weight", "augmentations_per_sample", "batch_size", "clip_duration_ms"] as (keyof TrainingParams)[]).map((k) => (
+                <MenuItem key={k} value={k}>
+                  {t(`config.f.${k}` as TKey)}
+                </MenuItem>
+              ))}
+            </TextField>
+            <TextField label={t("sweep.values")} value={sweepValues} onChange={(e) => setSweepValues(e.target.value)} helperText={sweepList.join(" · ")} />
+            <TextField label={t("sweep.label")} value={label} onChange={(e) => setLabel(e.target.value)} />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setSweepOpen(false)}>{t("compare.close")}</Button>
+          <Button variant="contained" onClick={startSweep} disabled={busy || sweepList.length === 0}>
+            {t("sweep.start", { n: sweepList.length })}
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Card>
   );
 }

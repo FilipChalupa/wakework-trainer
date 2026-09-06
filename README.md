@@ -21,7 +21,16 @@ and testing the result live in the browser. The output `.tflite` + manifest work
   accuracy, validation table, log.
 - **Live test** – microphone audio is streamed over WebSocket to the server, which runs the very same quantised streaming
   model with the same micro-frontend and sliding-window average as ESPHome. Evaluate the model on all stored recordings
-  to see which samples are missed and which negatives trigger it.
+  to see which samples are missed and which negatives trigger it; outliers (bad takes, negatives that trigger) can be
+  flagged for review with one click.
+- **Long-run false-accept monitor** – leave the browser listening during normal household activity; every activation is
+  saved (last 3 s of audio), can be played back and turned into a negative sample for the next training run.
+- **Deploy to ESPHome** – the latest model and manifest are served from token-protected URLs, so ESPHome can load
+  `model: https://…/manifest.json` directly; an example YAML also posts every on-device detection back to the trainer's
+  device timeline (with the ESPHome version, warning when it is older than the manifest requires). A bundle ZIP packs the
+  latest model of every project with one YAML for several wake words on one device.
+- **Queue and sweeps** – start runs while another is training (they queue up), or schedule a parameter sweep
+  (e.g. steps 2000/4000/8000) and compare the results in the morning; the history shows what changed between runs.
 - **ESPHome manifest** – `probability_cutoff` is derived from the test-set ROC curve; tune it in the test card and copy it over.
 - **Multiple projects** – each wake word lives in its own project (recordings, runs, settings); switch in the header,
   export/import a whole project as a ZIP for backups or moving between machines.
@@ -53,6 +62,10 @@ and testing the result live in the browser. The output `.tflite` + manifest work
 | Live test & evaluation | Datasets |
 | --- | --- |
 | ![Test](docs/screenshots/test.png) | ![Datasets](docs/screenshots/datasets.png) |
+
+| Deploy to ESPHome | Run history |
+| --- | --- |
+| ![Deploy](docs/screenshots/deploy.png) | ![Jobs](docs/screenshots/jobs.png) |
 
 ## Quick start
 
@@ -131,11 +144,16 @@ Lower `probability_cutoff` if the word is hard to trigger; raise it on false act
 | GET | `/api/recordings/{kind}/{id}` | Play a WAV |
 | DELETE | `/api/recordings/{kind}/{id}` | Soft delete (trash), `POST …/restore` restores |
 | GET / POST | `/api/datasets` · `/api/datasets/{id}/download` | Negative datasets |
-| POST / GET | `/api/train` · `/api/train/resume` · `/api/train/cancel` · `/api/train` | Start / resume / cancel / snapshot |
+| POST / GET | `/api/train` · `/api/train/resume` · `/api/train/cancel` · `/api/train` | Start (optionally `{training: {...overrides}, label}` – queued while running) / resume / cancel / snapshot |
+| POST / GET / DELETE | `/api/train/sweep` · `/api/train/queue` · `/api/train/queue/{id}` | Parameter sweep, queue |
+| GET / POST / DELETE | `/api/monitor` · `/api/monitor/{id}/negative` · `/api/monitor/{id}` · `/api/monitor/device-events` | Saved activations from the long-run test, ESP device events |
+| GET | `/api/projects/{id}/public-urls` · `/api/public/{token}/manifest.json` · `/api/public/{token}/model.tflite` | Token-protected model URLs for ESPHome (no login) |
+| POST | `/api/public/{token}/device-event` | Detection reported by an ESPHome device |
+| GET | `/api/bundle?projects=a,b` | ZIP with the latest models of several projects + ESPHome YAML |
 | GET | `/api/train/status` | SSE stream (`snapshot`, `state`, `log`) |
 | GET | `/api/train/model` | Latest trained `.tflite` |
 | GET | `/api/jobs` · `/api/jobs/{id}/model` · `/api/jobs/{id}/manifest` · `/api/jobs/{id}/export` · `/api/jobs/{id}/log` | Run history, ZIP export |
-| WS | `/api/test/ws?job_id=…&cutoff=…&window=…` | Live test: binary int16 16 kHz PCM in → JSON probabilities/detections out |
+| WS | `/api/test/ws?job_id=…&cutoff=…&window=…&save=1` | Live test: binary int16 16 kHz PCM in → JSON probabilities/detections out (`save=1` stores each activation) |
 | POST | `/api/jobs/{id}/evaluate?cutoff=…&window=…` | Evaluate a model on the stored recordings |
 
 ## Project layout

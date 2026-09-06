@@ -5,6 +5,7 @@ import { AppThemeProvider } from "./theme";
 import { api, type Job, type Project, type ProjectSummary, type TrainingParams } from "./api";
 import { ProjectSelector } from "./components/ProjectSelector";
 import { SystemChip } from "./components/SystemChip";
+import { DeployCard } from "./components/DeployCard";
 import { ContributePage } from "./ContributePage";
 import { ConfigCard } from "./components/ConfigCard";
 import { RecorderCard } from "./components/RecorderCard";
@@ -34,6 +35,7 @@ function Main() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [currentProject, setCurrentProject] = useState<string>("");
   const [reloadKey, setReloadKey] = useState(0);
+  const [jobsVersion, setJobsVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const { state, log, connected } = useTrainingStream();
 
@@ -42,7 +44,10 @@ function Main() {
   const loadJobs = useCallback(() => {
     api
       .listJobs()
-      .then((r) => setJobs(r.items))
+      .then((r) => {
+        setJobs(r.items);
+        setJobsVersion((v) => v + 1);
+      })
       .catch((e) => showError(errorText(t, e)));
   }, [showError, t]);
 
@@ -117,6 +122,7 @@ function Main() {
           <TrainingCard state={state} log={log} connected={connected} positiveCount={counts.positive} wakeWord={project?.wake_word ?? ""} onError={showError} onFinished={loadJobs} />
           <JobsCard jobs={jobs} disabled={running} onChanged={loadJobs} onError={showError} />
           <TestCard jobs={jobs} wakeWord={project?.wake_word ?? ""} disabled={running} onError={showError} />
+          {project && <DeployCard projectId={project.id} jobsVersion={jobsVersion} onError={showError} />}
           <Typography variant="caption" color="text.secondary" textAlign="center">
             {t("app.footer")}
           </Typography>

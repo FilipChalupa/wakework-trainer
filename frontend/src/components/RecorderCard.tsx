@@ -217,6 +217,12 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
     busyRef.current = true;
     stopSeriesRef.current = false;
     stopPlayback();
+    let wakeLock: { release: () => Promise<void> } | null = null;
+    try {
+      wakeLock = (await (navigator as Navigator & { wakeLock?: { request: (t: string) => Promise<{ release: () => Promise<void> }> } }).wakeLock?.request("screen")) ?? null;
+    } catch {
+      wakeLock = null;
+    }
     const total = Math.max(1, seriesSize);
     setSeries({ done: 0, total });
     try {
@@ -235,6 +241,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setSeries(null);
       setPhase("idle");
       busyRef.current = false;
+      wakeLock?.release().catch(() => undefined);
     }
   };
 
@@ -269,6 +276,15 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       for (const id of ids) await client.deleteRecording(targetKind, id);
       setSelected(new Set());
       setUndo({ kind: targetKind, ids });
+      await refresh();
+    } catch (e) {
+      fail(e);
+    }
+  };
+
+  const clearReview = async (rec: Recording) => {
+    try {
+      await api.setReview(rec.kind, rec.id, false);
       await refresh();
     } catch (e) {
       fail(e);
@@ -368,7 +384,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
           )}
 
           <Stack direction={{ xs: "column", sm: "row" }} spacing={3} alignItems="center">
-            <Box sx={{ position: "relative", display: "inline-flex" }}>
+            <Box sx={{ position: "relative", display: "inline-flex", "& .MuiIconButton-root": { width: { xs: 160, sm: 120 }, height: { xs: 160, sm: 120 } }, "& > .MuiCircularProgress-root": { width: { xs: "160px !important", sm: "120px !important" }, height: { xs: "160px !important", sm: "120px !important" } } }}>
               <CircularProgress
                 variant="determinate"
                 value={phase === "recording" ? (elapsed / durationS) * 100 : 0}
@@ -528,6 +544,11 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                       )}
                       {rec.tag && rec.tag !== "normal" && (
                         <Chip size="small" color="secondary" variant="outlined" label={t(`tag.${rec.tag}` as TKey)} sx={{ ml: 1, height: 18, fontSize: 11 }} />
+                      )}
+                      {rec.review && !compact && (
+                        <Tooltip title={t("rec.reviewHint")}>
+                          <Chip size="small" color="warning" label={t("rec.review")} onClick={() => clearReview(rec)} sx={{ ml: 1, height: 18, fontSize: 11 }} />
+                        </Tooltip>
                       )}
                     </Typography>
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
