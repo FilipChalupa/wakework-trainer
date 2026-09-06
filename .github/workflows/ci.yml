@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsndfile1 ffmpeg
+      - run: pip install -r backend/requirements-dev.txt
+      - run: cd backend && pytest -q
+
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: cd frontend && npm ci && npm run build
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build CPU image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: wakeword-trainer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start container
+        run: |
+          docker run -d --name app -p 8000:8000 -v "$PWD/ci-data:/data" wakeword-trainer:ci
+          for i in $(seq 1 60); do curl -sf http://localhost:8000/api/health && break; sleep 2; done
+          curl -sf http://localhost:8000/api/health
+          curl -sf http://localhost:8000/api/projects | grep -q '"current"'
+      - name: Smoke-test the UI with Playwright
+        run: |
+          docker run --rm --network host -v "$PWD/tests/e2e:/e2e" mcr.microsoft.com/playwright:v1.52.0-noble \
+            sh -c "cd /tmp && npm init -y >/dev/null && npm i -s playwright@1.52.0 >/dev/null && node /e2e/smoke.js"
+      - name: Container logs
+        if: always()
+        run: docker logs app

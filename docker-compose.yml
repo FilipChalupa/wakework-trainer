@@ -11,4 +11,9 @@ services:
       # Optional HTTP Basic auth for the whole UI/API (leave empty to disable)
       - APP_USER=${APP_USER:-admin}
       - APP_PASSWORD=${APP_PASSWORD:-}
+      # uid/gid that owns files in ./data (defaults match the first user on most Linux/WSL systems)
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      # how many finished training runs to keep per project
+      - KEEP_JOBS=${KEEP_JOBS:-10}
     restart: unless-stopped

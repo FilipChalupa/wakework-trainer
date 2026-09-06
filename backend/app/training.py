@@ -138,9 +138,13 @@ def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | N
     }
 
 
-def list_jobs(project: Project) -> list[dict[str, Any]]:
+def list_jobs(project: Project, running_job_id: str | None = None) -> list[dict[str, Any]]:
     project.ensure()
-    running = manager.state.get("job_id") if manager.is_running() else None
+    running = running_job_id
+    if running is None:
+        mgr = globals().get("manager")
+        if mgr is not None and mgr.is_running():
+            running = mgr.state.get("job_id")
     jobs = []
     for job_dir in sorted(project.jobs_dir.iterdir(), reverse=True):
         if job_dir.is_dir():
@@ -217,7 +221,7 @@ class JobManager:
             self.state = self._idle_state()
             self.state["project_id"] = project.id
         self.log.clear()
-        jobs = list_jobs(project)
+        jobs = list_jobs(project, running_job_id=self.state.get("job_id") if self.is_running() else None)
         if not jobs:
             self._publish("snapshot", self.snapshot())
             return

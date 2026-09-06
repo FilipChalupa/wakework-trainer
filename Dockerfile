@@ -18,8 +18,9 @@ ENV PYTHONUNBUFFERED=1 \
     TF_CPP_MIN_LOG_LEVEL=2
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg git libsndfile1 \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends ffmpeg git libsndfile1 gosu \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -g 1000 app && useradd -m -u 1000 -g app app
 
 WORKDIR /app
 COPY backend/requirements.txt ./
@@ -39,8 +40,12 @@ RUN git clone https://github.com/kahrendt/microWakeWord /opt/microWakeWord \
 
 COPY backend/ ./
 COPY --from=frontend /app/dist ./static
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh && chown -R app:app /app
 
+ENV HOME=/home/app
 VOLUME ["/data"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/api/health')" || exit 1
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
