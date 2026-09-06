@@ -126,6 +126,7 @@ def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | N
         "wake_word": job.get("wake_word"),
         "label": job.get("label") or "",
         "overrides": job.get("overrides") or {},
+        "target": (job.get("training") or {}).get("target", "esphome"),
         "slug": slug,
         "created_at": job.get("created_at"),
         "finished_at": result.get("finished_at"),
@@ -569,6 +570,14 @@ class JobManager:
             self._log(str(ev.get("message", "")))
         elif kind == "training_config":
             self._update(total_steps=int(ev.get("total_steps", 0)), eval_step_interval=int(ev.get("eval_step_interval", 1)))
+        elif kind == "training_step":
+            metrics = {k: float(ev.get(k, 0.0)) for k in ("accuracy", "recall", "precision", "loss")}
+            self._update(step=int(ev.get("step", 0)), train_metrics=metrics, progress={"current": int(ev.get("step", 0)), "total": int(ev.get("total", self.state["total_steps"]))})
+        elif kind == "validation":
+            entry = ev.get("entry") or {}
+            with self._lock:
+                self.state["validation"].append(entry)
+            self._publish("state", {"validation": self.state["validation"]})
         elif kind == "final_metrics":
             self._update(final_metrics=ev.get("summary"))
         elif kind == "done":
@@ -751,6 +760,28 @@ def job_log(job_id: str):
     return FileResponse(log, media_type="text/plain")
 
 
+def wyoming_readme(slug: str, wake_word: str) -> str:
+    return f"""openWakeWord model '{wake_word}' for Wyoming satellites / the Home Assistant openWakeWord add-on.
+
+Home Assistant add-on:  copy {slug}.tflite into /share/openwakeword/ (Samba or SSH add-on), restart the add-on,
+                        then pick "{slug}" as the wake word in the Assist pipeline / satellite.
+
+wyoming-openwakeword (Docker):
+  services:
+    openwakeword:
+      image: rhasspy/wyoming-openwakeword
+      command: --preload-model {slug} --custom-model-dir /custom --threshold 0.5
+      volumes:
+        - ./models:/custom          # put {slug}.tflite here
+      ports:
+        - "10400:10400"
+
+wyoming-satellite: add `--wake-uri tcp://<host>:10400 --wake-word-name {slug}`.
+Threshold: 0.5 is the openWakeWord default; raise it on false activations, lower it if the word is hard to trigger
+(the "auto threshold" in the training summary is a good starting point).
+"""
+
+
 def esphome_snippet(slug: str, wake_word: str) -> str:
     return f"""# Example ESPHome configuration for the "{wake_word}" wake word.
 # Copy {slug}.tflite and {slug}.json next to this YAML (or point `model:` to a URL).
@@ -780,7 +811,10 @@ def job_export(job_id: str):
         manifest = job_dir / f"{slug}.json"
         if manifest.exists():
             zf.write(manifest, f"{slug}/{manifest.name}")
-        zf.writestr(f"{slug}/esphome-example.yaml", esphome_snippet(slug, job.get("wake_word", slug)))
+        if (job.get("training") or {}).get("target") == "wyoming":
+            zf.writestr(f"{slug}/WYOMING.txt", wyoming_readme(slug, job.get("wake_word", slug)))
+        else:
+            zf.writestr(f"{slug}/esphome-example.yaml", esphome_snippet(slug, job.get("wake_word", slug)))
         for extra in ("training_parameters.yaml", "result.json", "train.log"):
             if (job_dir / extra).exists():
                 zf.write(job_dir / extra, f"{slug}/training/{extra}")

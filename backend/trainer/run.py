@@ -484,6 +484,12 @@ def main() -> int:
         IMPULSE_PATHS.append(str(rir_dir))
         log(f"Using room impulse responses: {rir_dir}")
 
+    if job["training"].get("target") == "wyoming":
+        from trainer.oww_train import run_wyoming
+
+        run_wyoming(job, job_dir, features_dir, started, noise_files, background_dirs, real_backgrounds)
+        return 0
+
     clip_ms, positive_clips = prepare_positives(job, writer, features_dir, background_dirs)
     hard_dir = prepare_hard_negatives(job, writer, features_dir, positive_clips, clip_ms, background_dirs)
     speech_dir = prepare_speech_commands(job, writer)
@@ -549,7 +555,7 @@ def run_training_and_export(job: dict, job_dir: Path, features_dir: Path, config
     emit("done", message_key="model_ready", params={"name": model_name, "kb": kb, "minutes": minutes}, message=f"Model {model_name} ({kb} kB) ready in {minutes} min")
 
 
-def auto_threshold(job: dict, model_path: Path) -> dict | None:
+def auto_threshold(job: dict, model_path: Path, windows: tuple[int, ...] = (3, 5, 7)) -> dict | None:
     """Runs the streaming model over the project's own recordings and derives a probability cutoff that
     lets ~95 % of the wake word recordings through while staying above every negative recording."""
     try:
@@ -567,7 +573,6 @@ def auto_threshold(job: dict, model_path: Path) -> dict | None:
             pcm[path] = _load_pcm16(path)
         except Exception as exc:  # noqa: BLE001
             log(f"Auto threshold: could not read {path.name}: {exc}")
-    windows = (3, 5, 7)
     candidates = []
     total = len(pcm) * len(windows)
     done = 0

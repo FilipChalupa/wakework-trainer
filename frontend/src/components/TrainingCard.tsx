@@ -21,6 +21,7 @@ type Props = {
   connected: boolean;
   positiveCount: number;
   wakeWord: string;
+  target?: TrainingParams["target"];
   onError: (message: string) => void;
   onFinished: () => void;
 };
@@ -38,7 +39,7 @@ const STATUS_COLOR: Record<TrainingState["status"], "default" | "info" | "succes
 };
 
 const STAGE_KEYS = new Set(["checking_datasets", "downloading_dataset", "extracting_dataset", "preparing", "training", "converting", "done", "failed", "cancelled", "interrupted"]);
-const MSG_KEYS = new Set(["init_tf", "augment_positive", "hard_negatives", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready", "auto_threshold"]);
+const MSG_KEYS = new Set(["init_tf", "augment_positive", "hard_negatives", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready", "auto_threshold", "oww_models"]);
 const NOTIFY_KEY = "wakeword-trainer.notify";
 
 function formatBytes(n: number) {
@@ -47,7 +48,7 @@ function formatBytes(n: number) {
   return `${(n / 1024).toFixed(0)} kB`;
 }
 
-export function TrainingCard({ state, log, connected, positiveCount, wakeWord, onError, onFinished }: Props) {
+export function TrainingCard({ state, log, connected, positiveCount, wakeWord, target = "esphome", onError, onFinished }: Props) {
   const { t } = useI18n();
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -176,7 +177,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
       <CardHeader
         avatar={<ModelTrainingIcon color="primary" />}
         title={t("train.title")}
-        subheader={t("train.subtitle")}
+        subheader={target === "wyoming" ? t("train.subtitle.wyoming") : t("train.subtitle")}
         action={
           <Stack direction="row" spacing={1} alignItems="center">
             {!connected && <Chip size="small" label={t("train.offline")} color="warning" variant="outlined" />}

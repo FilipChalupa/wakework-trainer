@@ -98,12 +98,22 @@ def get_public_urls(pid: str, request: Request):
     settings = load_settings(project)
     urls = public_urls(request, project)
     job = latest_done_job(project)
+    target = job["target"] if job else settings["training"].get("target", "esphome")
+    slug = job["slug"] if job else "wakeword"
+    if target == "wyoming":
+        from .training import wyoming_readme
+
+        snippet = wyoming_readme(slug, settings["wake_word"]) + f"\nDirect download of the latest model: {urls['model_url']}\n"
+    else:
+        snippet = esphome_url_snippet(urls, settings["wake_word"], slug)
     return {
         **urls,
         "has_model": job is not None,
         "job_id": job["job_id"] if job else None,
+        "target": target,
+        "slug": slug,
         "minimum_esphome_version": MIN_ESPHOME,
-        "snippet": esphome_url_snippet(urls, settings["wake_word"], job["slug"] if job else "wakeword"),
+        "snippet": snippet,
     }
 
 
@@ -114,7 +124,10 @@ def public_manifest(token: str, request: Request):
     if not job:
         raise HTTPException(404, "No trained model yet")
     job_dir = project.jobs_dir / job["job_id"]
-    manifest = json.loads((job_dir / f"{job['slug']}.json").read_text())
+    manifest_path = job_dir / f"{job['slug']}.json"
+    if job.get("target") == "wyoming" or not manifest_path.exists():
+        raise HTTPException(404, "The latest model is an openWakeWord (Wyoming) model – it has no ESPHome manifest; download model.tflite instead")
+    manifest = json.loads(manifest_path.read_text())
     manifest["model"] = f"{public_base(request)}/api/public/{token}/model.tflite"
     return JSONResponse(manifest, headers={"Cache-Control": "no-cache"})
 

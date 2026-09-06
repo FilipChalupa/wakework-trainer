@@ -1,4 +1,7 @@
+export type TrainingTarget = "esphome" | "wyoming";
+
 export type TrainingParams = {
+  target: TrainingTarget;
   hard_negatives: boolean;
   training_steps: number;
   learning_rate: number;
@@ -146,12 +149,13 @@ export type QueuedRun = { id: string; project_id: string; overrides: Partial<Tra
 
 export type MonitorItem = Recording & { job_id?: string };
 export type DeviceEvent = { at: string; device: string; wake_word: string; esphome_version: string; probability: number | null };
-export type PublicUrls = { token: string; manifest_url: string; model_url: string; device_event_url: string; has_model: boolean; job_id: string | null; minimum_esphome_version: string; snippet: string };
+export type PublicUrls = { token: string; manifest_url: string; model_url: string; device_event_url: string; has_model: boolean; job_id: string | null; target: TrainingTarget; slug: string; minimum_esphome_version: string; snippet: string };
 
 export type Job = {
   job_id: string;
   wake_word: string;
   label: string;
+  target: TrainingTarget;
   overrides: Partial<TrainingParams>;
   slug: string;
   created_at: string;
@@ -202,7 +206,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export type TestInfo = { job_id: string; model: string; probability_cutoff: number; sliding_window_size: number };
+export type TestInfo = { job_id: string; model: string; target: TrainingTarget; probability_cutoff: number; sliding_window_size: number };
 
 export type EvaluationItem = {
   id: string;

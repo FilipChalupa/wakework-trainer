@@ -24,6 +24,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
   const theme = useTheme();
   const models = jobs.filter((j) => j.status === "done" && j.model_url);
   const [jobId, setJobId] = useState<string>("");
+  const currentTarget = models.find((m) => m.job_id === jobId)?.target ?? "esphome";
   const [cutoff, setCutoff] = useState(0.97);
   const [window, setWindow] = useState(5);
   const [listening, setListening] = useState<"off" | "connecting" | "on">("off");
@@ -249,7 +250,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
               <TextField select size="small" label={t("test.model")} value={jobId} onChange={(e) => setJobId(e.target.value)} sx={{ minWidth: 260 }} disabled={active}>
                 {models.map((m) => (
                   <MenuItem key={m.job_id} value={m.job_id}>
-                    {m.slug}.tflite · {new Date(m.created_at).toLocaleString()}
+                    {m.slug}.tflite · {m.target === "wyoming" ? "Wyoming" : "ESPHome"} · {new Date(m.created_at).toLocaleString()}
                   </MenuItem>
                 ))}
               </TextField>
@@ -260,8 +261,8 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
                 <Slider size="small" min={0.3} max={0.99} step={0.01} value={cutoff} onChange={(_, v) => setCutoff(v as number)} disabled={active} />
               </Box>
               <FormControlLabel control={<Switch checked={monitor} onChange={(e) => setMonitor(e.target.checked)} disabled={active} />} label={<Typography variant="body2">{t("monitor.switch")}</Typography>} />
-              <TextField select size="small" label={t("test.window")} value={window} onChange={(e) => setWindow(Number(e.target.value))} sx={{ minWidth: 170 }} disabled={active}>
-                {[1, 3, 5, 7, 10].map((n) => (
+              <TextField select size="small" label={currentTarget === "wyoming" ? t("test.trigger") : t("test.window")} value={window} onChange={(e) => setWindow(Number(e.target.value))} sx={{ minWidth: 170 }} disabled={active}>
+                {(currentTarget === "wyoming" ? [1, 2, 3] : [1, 3, 5, 7, 10]).map((n) => (
                   <MenuItem key={n} value={n}>
                     {n}
                   </MenuItem>

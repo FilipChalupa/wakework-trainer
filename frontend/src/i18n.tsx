@@ -371,6 +371,19 @@ const cs = {
   "sys.version": "v{version}",
   "sys.update": "Nová verze {latest} na GitHubu",
   "sys.upToDate": "Aktuální verze",
+  "config.platform": "Cílová platforma",
+  "config.platformHelp": "ESPHome = microWakeWord model běžící přímo na ESP32-S3. Wyoming = openWakeWord model pro wyoming-openwakeword / add-on openWakeWord v Home Assistantu (Raspberry Pi satelity).",
+  "target.esphome": "ESPHome (microWakeWord na ESP)",
+  "target.wyoming": "Wyoming (openWakeWord na serveru)",
+  "target.short.esphome": "ESPHome",
+  "target.short.wyoming": "Wyoming",
+  "train.subtitle.wyoming": "openWakeWord (speech embeddings + DNN) → TensorFlow Lite model pro Wyoming",
+  "train.msg.oww_models": "Stahuji feature modely openWakeWord",
+  "deploy.wyomingHelp": "Nejnovější model projektu je openWakeWord (Wyoming). Stáhněte .tflite z odkazu níže a nakopírujte ho mezi vlastní modely (add-on: /share/openwakeword, wyoming-openwakeword: --custom-model-dir). Manifest pro ESPHome se u tohoto cíle nevytváří.",
+  "deploy.modelUrl": "URL modelu (.tflite)",
+  "deploy.snippetWyoming": "Návod pro Wyoming / Home Assistant",
+  "test.trigger": "Trigger level (po sobě jdoucí rámce)",
+  "jobs.target": "Cíl",
 };
 
 const en: Record<keyof typeof cs, string> = {
@@ -741,6 +754,19 @@ const en: Record<keyof typeof cs, string> = {
   "sys.version": "v{version}",
   "sys.update": "New version {latest} on GitHub",
   "sys.upToDate": "Up to date",
+  "config.platform": "Target platform",
+  "config.platformHelp": "ESPHome = microWakeWord model running directly on the ESP32-S3. Wyoming = openWakeWord model for wyoming-openwakeword / the Home Assistant openWakeWord add-on (Raspberry Pi satellites).",
+  "target.esphome": "ESPHome (microWakeWord on the ESP)",
+  "target.wyoming": "Wyoming (openWakeWord on a server)",
+  "target.short.esphome": "ESPHome",
+  "target.short.wyoming": "Wyoming",
+  "train.subtitle.wyoming": "openWakeWord (speech embeddings + DNN) → TensorFlow Lite model for Wyoming",
+  "train.msg.oww_models": "Downloading openWakeWord feature models",
+  "deploy.wyomingHelp": "The project's latest model is an openWakeWord (Wyoming) model. Download the .tflite below and copy it into your custom model directory (add-on: /share/openwakeword, wyoming-openwakeword: --custom-model-dir). No ESPHome manifest is produced for this target.",
+  "deploy.modelUrl": "Model URL (.tflite)",
+  "deploy.snippetWyoming": "Wyoming / Home Assistant instructions",
+  "test.trigger": "Trigger level (consecutive frames)",
+  "jobs.target": "Target",
 };
 
 export type TKey = keyof typeof cs;

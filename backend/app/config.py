@@ -37,6 +37,7 @@ DEFAULT_TRAINING = {
     "negative_class_weight": 10.0,
     "positive_class_weight": 1.0,
     "hard_negatives": True,
+    "target": "esphome",  # esphome (microWakeWord) | wyoming (openWakeWord)
 }
 
 _lock = threading.RLock()
@@ -139,6 +140,8 @@ def save_settings(project: Project, update: dict[str, Any]) -> dict[str, Any]:
         for key, default in DEFAULT_TRAINING.items():
             if key in update["training"] and update["training"][key] is not None:
                 settings["training"][key] = type(default)(update["training"][key])
+        if settings["training"].get("target") not in ("esphome", "wyoming"):
+            settings["training"]["target"] = "esphome"
     write_settings(project, settings)
     return settings
 

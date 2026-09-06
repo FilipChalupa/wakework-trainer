@@ -73,6 +73,19 @@ DATASETS: dict[str, dict[str, Any]] = {
         "folder": "fma_16k",
         "convert": {"max_seconds": 8.0, "max_files": 1000},
     },
+    "oww_validation": {
+        "title": "openWakeWord validation features",
+        "description": {
+            "cs": "~10 hodin předpočítaných embeddingů negativního audia (openWakeWord). Používá se jen u cíle Wyoming k odhadu falešných aktivací za hodinu a k výběru nejlepších vah.",
+            "en": "~10 hours of pre-computed negative audio embeddings (openWakeWord). Used only for the Wyoming target to estimate false accepts per hour and pick the best weights.",
+        },
+        "size_mb": 185,
+        "required": False,
+        "url": "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy",
+        "type": "file",
+        "folder": "oww_validation",
+        "filename": "validation_set_features.npy",
+    },
     "dinner_party_eval": {
         "title": "microWakeWord – dinner_party_eval",
         "description": {
@@ -113,6 +126,9 @@ def is_installed(name: str) -> bool:
         return False
     if DATASETS[name]["type"] == "audio":
         return any(p for p in path.rglob("*.wav") if not p.name.startswith("._"))
+    if DATASETS[name]["type"] == "file":
+        target = path / DATASETS[name]["filename"]
+        return target.exists() and target.stat().st_size > 1_000_000
     return any(path.rglob("*_mmap"))
 
 
@@ -187,6 +203,30 @@ def download(name: str, progress: Callable[[dict], None] | None = None) -> None:
     target = dataset_path(name)
     tmp_zip = DATASETS_DIR / f"{meta['folder']}.zip.part"
     _set(name, state="downloading", received=0, total=None, error=None)
+    if meta["type"] == "file":
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            final = target / meta["filename"]
+            part = final.with_suffix(final.suffix + ".part")
+            with requests.get(meta["url"], stream=True, timeout=60) as resp:
+                resp.raise_for_status()
+                total = int(resp.headers.get("content-length") or 0) or None
+                received = 0
+                with open(part, "wb") as fh:
+                    for chunk in resp.iter_content(chunk_size=1 << 20):
+                        fh.write(chunk)
+                        received += len(chunk)
+                        _set(name, received=received, total=total)
+                        if progress:
+                            progress({"received": received, "total": total})
+            part.rename(final)
+            if not is_installed(name):
+                raise RuntimeError("Downloaded file is incomplete")
+            _set(name, state="done")
+        except Exception as exc:  # noqa: BLE001
+            _set(name, state="error", error=str(exc))
+            raise
+        return
     try:
         with requests.get(meta["url"], stream=True, timeout=60) as resp:
             resp.raise_for_status()

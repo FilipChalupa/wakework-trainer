@@ -90,6 +90,83 @@ class StreamingDetector:
         return results
 
 
+class OwwStreamingDetector:
+    """Same interface as StreamingDetector, for openWakeWord-style (Wyoming) classifiers."""
+
+    def __init__(self, model_path: Path, cutoff: float = 0.5, window: int = 1):
+        from trainer.oww_features import OwwClassifier, OwwFeatures, OwwStreamer, ensure_oww_models
+
+        from .config import FEATURE_CACHE_DIR
+
+        self.features = _shared_oww_features(ensure_oww_models(FEATURE_CACHE_DIR))
+        self.streamer = OwwStreamer(self.features)
+        self.classifier = OwwClassifier(model_path)
+        self.cutoff = float(cutoff)
+        self.window = max(1, int(window))  # here: consecutive frames above the cutoff needed (wyoming "trigger level")
+        self._above = 0
+        self._refractory = 0
+        self._warmup = 20  # ~1.6 s: the streamer's zero-filled buffers settle
+        self._buffer = b""
+        self.max_average = 0.0
+        self.detections = 0
+
+    def recent_audio(self) -> bytes:
+        return self.streamer._history[-16000 * 3 :].astype(np.int16).tobytes()
+
+    def feed(self, pcm: bytes) -> list[dict[str, Any]]:
+        self._buffer += pcm
+        usable = len(self._buffer) - len(self._buffer) % 2
+        samples = np.frombuffer(self._buffer[:usable], dtype=np.int16)
+        self._buffer = self._buffer[usable:]
+        results: list[dict[str, Any]] = []
+        from trainer.oww_features import CHUNK_SAMPLES
+
+        frames: list[np.ndarray] = []
+        # feed chunk by chunk so every produced embedding frame gets its own prediction (a single big feed
+        # would only leave the final window)
+        for start in range(0, samples.shape[0], CHUNK_SAMPLES):
+            for _ in range(self.streamer.feed(samples[start : start + CHUNK_SAMPLES])):
+                frames.append(self.streamer.window().copy())
+        for window in frames:
+            probability = self.classifier.predict(window)
+            detected = False
+            if self._warmup > 0:
+                self._warmup -= 1
+                results.append({"p": round(probability, 4), "avg": round(probability, 4), "detected": False, "warmup": True})
+                continue
+            self.max_average = max(self.max_average, probability)
+            self._above = self._above + 1 if probability >= self.cutoff else 0
+            if self._refractory > 0:
+                self._refractory -= 1
+            elif self._above >= self.window:
+                detected = True
+                self.detections += 1
+                self._refractory = 12  # ~1 s
+                self._above = 0
+            results.append({"p": round(probability, 4), "avg": round(probability, 4), "detected": detected})
+        return results
+
+
+_oww_features_cache: dict[str, Any] = {}
+
+
+def _shared_oww_features(models_dir: Path):
+    from trainer.oww_features import OwwFeatures
+
+    key = str(models_dir)
+    if key not in _oww_features_cache:
+        _oww_features_cache[key] = OwwFeatures(models_dir)
+    return _oww_features_cache[key]
+
+
+def make_detector(model_path: Path, cutoff: float, window: int):
+    from trainer.oww_features import is_oww_model
+
+    if is_oww_model(model_path):
+        return OwwStreamingDetector(model_path, cutoff=cutoff, window=window)
+    return StreamingDetector(model_path, cutoff=cutoff, window=window)
+
+
 def monitor_dir(project: Project) -> Path:
     path = project.dir / "monitor"
     path.mkdir(parents=True, exist_ok=True)
@@ -143,7 +220,7 @@ def _load_pcm16(path: Path) -> bytes:
 
 
 def evaluate_clip(model_path: Path, pcm: bytes, cutoff: float, window: int) -> dict[str, Any]:
-    detector = StreamingDetector(model_path, cutoff=cutoff, window=window)
+    detector = make_detector(model_path, cutoff=cutoff, window=window)
     # leading silence covers the model's start-up transient, trailing silence lets it see the end of the word
     detector.feed(bytes(FRAME_BYTES * 90) + pcm + bytes(FRAME_BYTES * 40))
     return {"max_probability": round(detector.max_average, 4), "detections": detector.detections}
@@ -153,11 +230,14 @@ def evaluate_clip(model_path: Path, pcm: bytes, cutoff: float, window: int) -> d
 def test_info(job_id: str):
     model, manifest = _model_for_job(job_id)
     micro = manifest.get("micro", {})
+    job = json.loads((_job_dir(job_id) / "job.json").read_text())
+    target = (job.get("training") or {}).get("target", "esphome")
     return {
         "job_id": job_id,
         "model": model.name,
-        "probability_cutoff": micro.get("probability_cutoff", 0.97),
-        "sliding_window_size": micro.get("sliding_window_size", 5),
+        "target": target,
+        "probability_cutoff": micro.get("probability_cutoff", 0.5 if target == "wyoming" else 0.97),
+        "sliding_window_size": micro.get("sliding_window_size", 1 if target == "wyoming" else 5),
     }
 
 
@@ -250,7 +330,7 @@ async def test_websocket(websocket: WebSocket):
         await websocket.close()
         return
     try:
-        detector = await run_in_threadpool(StreamingDetector, model, cutoff, window)
+        detector = await run_in_threadpool(make_detector, model, cutoff, window)
     except Exception as exc:  # noqa: BLE001
         _live_sessions.release()
         await websocket.send_json({"type": "error", "message": f"Could not load model: {exc}"})
@@ -267,7 +347,7 @@ async def test_websocket(websocket: WebSocket):
             if data is None:
                 text = message.get("text") or ""
                 if text == "reset":
-                    detector = await run_in_threadpool(StreamingDetector, model, cutoff, window)
+                    detector = await run_in_threadpool(make_detector, model, cutoff, window)
                     await websocket.send_json({"type": "ready", "cutoff": cutoff, "window": window, "model": model.name})
                 continue
             results = await run_in_threadpool(detector.feed, data)

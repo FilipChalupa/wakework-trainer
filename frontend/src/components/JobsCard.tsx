@@ -99,6 +99,7 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                     </TableCell>
                     <TableCell>
                       {job.wake_word}
+                      <Chip size="small" variant="outlined" label={t(job.target === "wyoming" ? "target.short.wyoming" : "target.short.esphome")} sx={{ ml: 1, height: 18, fontSize: 11 }} />
                       {job.final_metrics && (
                         <Typography variant="caption" color="text.secondary" display="block">
                           {t("jobs.metrics", {

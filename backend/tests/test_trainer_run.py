@@ -90,3 +90,27 @@ def test_pick_best_window_is_json_serializable_and_prefers_separation():
     best = pick_best_window(cands)
     assert best["window"] == 5 and len(best["candidates"]) == 3
     json.dumps(best)  # must not raise (no circular reference)
+
+
+def test_oww_window_math_and_false_accepts():
+    from trainer.oww_features import CLASSIFIER_FRAMES, classifier_windows, embedding_windows, mel_transform
+    from trainer.oww_train import auc_score, false_accepts, last_window
+
+    assert embedding_windows(75) == 0 and embedding_windows(76) == 1 and embedding_windows(197) == 16  # 2.0 s clip -> 16 frames
+    assert classifier_windows(16) == [(0, 16)] and len(classifier_windows(53, 12)) == 4
+    assert last_window(np.zeros((10, 96), dtype=np.float32)) is None
+    assert last_window(np.zeros((20, 96), dtype=np.float32)).shape == (CLASSIFIER_FRAMES, 96)
+    assert np.allclose(mel_transform(np.array([80.0, 100.0])), [10.0, 12.0])
+    probs = np.array([0.1, 0.9, 0.9, 0.9, 0.1, 0.1, 0.95])
+    assert false_accepts(probs, 0.5, refractory=2) == 2
+    assert auc_score(np.array([0.9, 0.8]), np.array([0.1, 0.2])) == 1.0
+    assert abs(auc_score(np.array([0.5]), np.array([0.5])) - 0.5) < 1e-6
+
+
+def test_target_setting_validation(tmp_path, monkeypatch):
+    from app import config
+
+    project = config.create_project("target-test", "hej")
+    assert config.save_settings(project, {"training": {"target": "wyoming"}})["training"]["target"] == "wyoming"
+    assert config.save_settings(project, {"training": {"target": "nonsense"}})["training"]["target"] == "esphome"
+    config.delete_project(project.id)

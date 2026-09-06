@@ -1,10 +1,13 @@
 # Wake Word Trainer
 
 
-A self-contained web app for recording voice samples, training your own **wake word** model with
-[microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → quantised streaming TensorFlow Lite),
-and testing the result live in the browser. The output `.tflite` + manifest works directly with the ESPHome
-[`micro_wake_word`](https://esphome.io/components/micro_wake_word) component.
+A self-contained web app for recording voice samples, training your own **wake word** model and testing the result
+live in the browser. Two targets:
+
+- **ESPHome** – [microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → quantised streaming TensorFlow
+  Lite) running directly on an ESP32-S3 via the [`micro_wake_word`](https://esphome.io/components/micro_wake_word) component.
+- **Wyoming** – an [openWakeWord](https://github.com/dscripka/openWakeWord)-compatible model (Google speech embeddings +
+  small DNN, trained here in TensorFlow) for `wyoming-openwakeword` and the Home Assistant openWakeWord add-on.
 
 ![Wake Word Trainer – dark theme](docs/screenshots/hero-dark.png)
 
@@ -19,6 +22,11 @@ and testing the result live in the browser. The output `.tflite` + manifest work
 - **Training pipeline** – silence trimming + augmentation (audiomentations) → micro-frontend spectrograms → MixedNet training with the
   original `microwakeword.model_train_eval` → int8 quantised streaming `.tflite`. Live progress over SSE: steps, loss,
   accuracy, validation table, log.
+- **Wyoming / openWakeWord target** – the same recordings and negatives go through openWakeWord's official
+  melspectrogram + speech-embedding models (downloaded once, run with the TFLite runtime) into a Keras re-implementation
+  of the openWakeWord DNN classifier; the exported float32 `.tflite` has the `(1, 16, 96)` input wyoming-openwakeword
+  expects. The live test, evaluation and monitor use the same streaming feature pipeline as the satellite. Optional:
+  openWakeWord's 10-hour validation feature set for false-accept estimation.
 - **Live test** – microphone audio is streamed over WebSocket to the server, which runs the very same quantised streaming
   model with the same micro-frontend and sliding-window average as ESPHome. Evaluate the model on all stored recordings
   to see which samples are missed and which negatives trigger it; outliers (bad takes, negatives that trigger) can be
@@ -67,9 +75,9 @@ and testing the result live in the browser. The output `.tflite` + manifest work
 | --- | --- |
 | ![Test](docs/screenshots/test.png) | ![Datasets](docs/screenshots/datasets.png) |
 
-| Deploy to ESPHome | Run history |
+| Deploy to ESPHome | Deploy to Wyoming |
 | --- | --- |
-| ![Deploy](docs/screenshots/deploy.png) | ![Jobs](docs/screenshots/jobs.png) |
+| ![Deploy](docs/screenshots/deploy.png) | ![Wyoming](docs/screenshots/deploy-wyoming.png) |
 
 ## Quick start
 
@@ -182,11 +190,18 @@ DATA_DIR=../data uvicorn app.main:app --reload
 cd frontend && npm install && npm run dev
 ```
 
+### Using a Wyoming model
+
+Pick *Wyoming* as the target platform in the configuration card and train. Then copy `<wakeword>.tflite` into your
+custom model directory – `/share/openwakeword/` for the Home Assistant add-on, or `--custom-model-dir` for
+`wyoming-openwakeword` – and select the model name in the Assist pipeline. The Deploy tab shows a ready-made
+docker-compose snippet and a direct download URL for the latest model. Only the classifier is trained here; openWakeWord's
+own feature models (`melspectrogram.tflite`, `embedding_model.tflite`) are fetched from its GitHub release.
+
 ## Not supported (yet)
 
-- **openWakeWord / Wyoming models** – openWakeWord's training stack pins TensorFlow 2.8 on Python 3.10 with torch, speechbrain and
-  onnx-tf and needs ~2 GB of pre-computed negative features; it cannot share this image. A separate container would be the way to go.
 - **TTS sample generation (Piper)** – planned as an optional Docker profile.
+- **openWakeWord ONNX export** – only `.tflite` is produced (that is what wyoming-openwakeword and the add-on use).
 
 ## Credits
 

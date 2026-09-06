@@ -81,6 +81,18 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
             </TextField>
           </Stack>
 
+          <TextField
+            select
+            label={t("config.platform")}
+            value={training.target ?? "esphome"}
+            onChange={(e) => setTraining({ ...training, target: e.target.value as TrainingParams["target"] })}
+            disabled={disabled}
+            helperText={t("config.platformHelp")}
+          >
+            <MenuItem value="esphome">{t("target.esphome")}</MenuItem>
+            <MenuItem value="wyoming">{t("target.wyoming")}</MenuItem>
+          </TextField>
+
           <Accordion disableGutters variant="outlined">
             <AccordionSummary expandIcon={<ExpandMoreIcon />}>
               <Typography variant="subtitle2">{t("config.trainingParams")}</Typography>

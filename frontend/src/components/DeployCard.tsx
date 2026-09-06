@@ -63,17 +63,18 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
             {t("deploy.help")}
           </Typography>
           {urls && !urls.has_model && <Alert severity="info">{t("deploy.noModel")}</Alert>}
+          {urls && urls.target === "wyoming" && <Alert severity="info" variant="outlined">{t("deploy.wyomingHelp")}</Alert>}
           {urls && (
             <>
-              <TextField size="small" label={t("deploy.manifest")} value={urls.manifest_url} fullWidth InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
+              <TextField size="small" label={urls.target === "wyoming" ? t("deploy.modelUrl") : t("deploy.manifest")} value={urls.target === "wyoming" ? urls.model_url : urls.manifest_url} fullWidth InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
                 <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy}>
                   {copied ? t("share.copied") : t("deploy.copy")}
                 </Button>
                 <Button startIcon={showSnippet ? <ExpandLessIcon /> : <ExpandMoreIcon />} onClick={() => setShowSnippet((v) => !v)}>
-                  {t("deploy.snippet")}
+                  {urls.target === "wyoming" ? t("deploy.snippetWyoming") : t("deploy.snippet")}
                 </Button>
-                <Chip size="small" variant="outlined" label={t("deploy.minVersion", { min: urls.minimum_esphome_version })} />
+                {urls.target !== "wyoming" && <Chip size="small" variant="outlined" label={t("deploy.minVersion", { min: urls.minimum_esphome_version })} />}
               </Stack>
               <Collapse in={showSnippet}>
                 <Box component="pre" sx={{ m: 0, p: 1.5, borderRadius: 2, bgcolor: (th) => (th.palette.mode === "dark" ? "#05080f" : "#0f172a"), color: "#cbd5e1", fontSize: 11, overflowX: "auto" }}>
