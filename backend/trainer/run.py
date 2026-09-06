@@ -40,8 +40,8 @@ def log(message: str) -> None:
     emit("log", message=message)
 
 
-def stage(name: str, message: str | None = None, **extra) -> None:
-    emit("stage", name=name, message=message, **extra)
+def stage(key: str, name: str, message_key: str | None = None, message: str | None = None, params: dict | None = None, **extra) -> None:
+    emit("stage", key=key, name=name, message_key=message_key, message=message, params=params or {}, **extra)
 
 
 # --------------------------------------------------------------------------------------
@@ -154,7 +154,7 @@ def prepare_positives(job: dict, writer: FeatureWriter, features_dir: Path, back
     ]
     for set_name, split, repeat, slide in plan:
         expected = len(splits[split]) * repeat * slide
-        stage("Příprava dat", f"Augmentace pozitivních vzorků ({set_name})", current=0, total=expected)
+        stage("preparing", "Preparing data", "augment_positive", f"Augmenting positive samples ({set_name})", {"set": set_name}, current=0, total=expected)
         augmenter = make_augmenter(duration_s, background, positive=True)
         writer.write(
             features_dir / "positive" / set_name / "wakeword_mmap",
@@ -189,7 +189,7 @@ def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
     plan = [("training", "train", 1), ("validation", "validation", 1), ("testing", "test", 1)]
     for set_name, split, repeat in plan:
         expected = len(splits[split]) * repeat
-        stage("Příprava dat", f"Spektrogramy negativní řeči ({set_name}, {expected} klipů)", current=0, total=expected)
+        stage("preparing", "Preparing data", "speech_features", f"Spectrograms of negative speech ({set_name}, {expected} clips)", {"set": set_name, "count": expected}, current=0, total=expected)
         augmenter = make_augmenter(2.0, [], positive=False, seed=42)
         writer.write(cache_dir / set_name / "speech_mmap", spectrogram_generator(clips, augmenter, split, repeat, None), expected, f"speech/{set_name}")
     marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"))
@@ -207,7 +207,7 @@ def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_
         n_reps = max(1, int(noise_reps * fraction))
         u_reps = max(1, int(user_reps * fraction))
         expected = len(noise_files) * n_reps + len(user_negatives) * u_reps
-        stage("Příprava dat", f"Šum a vlastní negativní nahrávky ({set_name})", current=0, total=expected)
+        stage("preparing", "Preparing data", "noise_features", f"Noise and custom negative recordings ({set_name})", {"set": set_name}, current=0, total=expected)
 
         def gen():
             noise_clips = WavClips({"train": noise_files, "validation": noise_files, "test": noise_files}, trim=False, normalize=False)
@@ -230,7 +230,7 @@ def prepare_ambient(job: dict, writer: FeatureWriter, features_dir: Path, noise_
         rng = random.Random(seed)
         splits = stable_split(speech) if speech else {"validation": [], "test": []}
         pool = list(splits["validation" if set_name.startswith("validation") else "test"]) + user_negatives * 5
-        stage("Příprava dat", f"Dlouhý ambientní záznam pro měření falešných aktivací ({set_name})", current=0, total=2)
+        stage("preparing", "Preparing data", "ambient_features", f"Long ambient recording for false-accept measurement ({set_name})", {"set": set_name}, current=0, total=2)
         if not pool:
             pool = noise_files
 
@@ -321,20 +321,15 @@ def parse_roc(text: str) -> tuple[float | None, list[dict]]:
     return auc, points
 
 
-def summarize_roc(auc: float | None, points: list[dict]) -> tuple[str | None, float]:
-    """Returns (human readable summary, suggested probability cutoff for the ESPHome manifest)."""
+def summarize_roc(auc: float | None, points: list[dict]) -> tuple[dict | None, float]:
+    """Returns (structured summary, suggested probability cutoff for the ESPHome manifest)."""
     cutoff = 0.97
     if not points:
         return None, cutoff
     clean = [p for p in points if p["faph"] <= 0.5] or [min(points, key=lambda p: p["faph"])]
     best = min(clean, key=lambda p: (p["frr"], -p["cutoff"]))
     cutoff = float(min(0.97, max(0.6, round(best["cutoff"] + 0.05, 2))))
-    summary = (
-        f"cutoff {best['cutoff']:.2f}: falešná odmítnutí {best['frr'] * 100:.0f} %, "
-        f"falešné aktivace {best['faph']:.2f}/h (testovací sada)"
-    )
-    if auc is not None:
-        summary = f"AUC {auc:.3f}; " + summary
+    summary = {"auc": auc, "cutoff": best["cutoff"], "frr": best["frr"], "faph": best["faph"], "manifest_cutoff": cutoff}
     return summary, cutoff
 
 
@@ -368,7 +363,7 @@ def main() -> int:
     features_dir = job_dir / "features"
     started = time.time()
 
-    stage("Příprava dat", "Inicializace TensorFlow a microWakeWord", status="preparing")
+    stage("preparing", "Preparing data", "init_tf", "Initialising TensorFlow and microWakeWord", status="preparing")
     import tensorflow as tf  # noqa: F401  (import early so failures show up immediately)
 
     gpus = tf.config.list_physical_devices("GPU")
@@ -404,13 +399,13 @@ def main() -> int:
     config_path = build_training_config(job, job_dir, feature_sets, clip_ms)
     log(f"Data preparation finished in {time.time() - started:.0f}s")
 
-    stage("Trénování", f"Trénink modelu ({job['training']['training_steps']} kroků)", status="training")
+    stage("training", "Training", "train_steps", f"Training the model ({job['training']['training_steps']} steps)", {"steps": int(job["training"]["training_steps"])}, status="training")
     train_dir = job_dir / "trained_model"
     if train_dir.exists():
         shutil.rmtree(train_dir)
     run_microwakeword(config_path)
 
-    stage("Konverze", "Hledám vygenerovaný TFLite model", status="converting")
+    stage("converting", "Converting", "find_model", "Looking for the generated TFLite model", status="converting")
     tflite = train_dir / "tflite_stream_state_internal_quant" / "stream_state_internal_quant.tflite"
     if not tflite.exists():
         raise RuntimeError(f"Expected TFLite model not found at {tflite}")
@@ -420,11 +415,14 @@ def main() -> int:
     summary, cutoff = summarize_roc(*parse_roc(roc.read_text())) if roc.exists() else (None, 0.97)
     if summary:
         emit("final_metrics", summary=summary)
+        log(f"Test set ROC: AUC {summary['auc']}; cutoff {summary['cutoff']:.2f} -> FRR {summary['frr'] * 100:.0f} %, FAPH {summary['faph']:.2f}")
     log(f"Manifest probability_cutoff set to {cutoff:.2f} (tune it in the JSON manifest if the word triggers too easily / too rarely)")
     write_manifest(job, job_dir, clip_ms, model_name, cutoff)
     # free disk: the per-job feature mmaps are large and only needed during training
     shutil.rmtree(features_dir, ignore_errors=True)
-    emit("done", message=f"Model {model_name} ({(job_dir / model_name).stat().st_size // 1024} kB) hotov za {(time.time() - started) / 60:.1f} min")
+    kb = (job_dir / model_name).stat().st_size // 1024
+    minutes = round((time.time() - started) / 60, 1)
+    emit("done", message_key="model_ready", params={"name": model_name, "kb": kb, "minutes": minutes}, message=f"Model {model_name} ({kb} kB) ready in {minutes} min")
     return 0
 
 
@@ -433,5 +431,5 @@ if __name__ == "__main__":
         sys.exit(main())
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        emit("stage", name="Chyba", message=str(exc))
+        emit("stage", key="failed", name="Error", message=str(exc), params={})
         sys.exit(1)

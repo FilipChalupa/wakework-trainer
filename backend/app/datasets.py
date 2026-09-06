@@ -19,7 +19,10 @@ HF_ROOT = "https://huggingface.co/datasets/kahrendt/microwakeword/resolve/main/"
 DATASETS: dict[str, dict[str, Any]] = {
     "mini_speech_commands": {
         "title": "Mini Speech Commands (Google)",
-        "description": "8 000 jednosekundových nahrávek běžné řeči (yes/no/up/down/…). Základní negativní dataset – stáhne se automaticky před prvním trénováním.",
+        "description": {
+            "cs": "8 000 jednosekundových nahrávek běžné řeči (yes/no/up/down/…). Základní negativní dataset – stáhne se automaticky před prvním trénováním.",
+            "en": "8,000 one-second recordings of common speech (yes/no/up/down/…). The base negative dataset – downloaded automatically before the first training run.",
+        },
         "size_mb": 182,
         "required": True,
         "url": "http://storage.googleapis.com/download.tensorflow.org/data/mini_speech_commands.zip",
@@ -28,7 +31,10 @@ DATASETS: dict[str, dict[str, Any]] = {
     },
     "dinner_party_eval": {
         "title": "microWakeWord – dinner_party_eval",
-        "description": "Předpočítané spektrogramy hovoru více lidí v pozadí (jen pro validaci/test – měření falešných aktivací za hodinu).",
+        "description": {
+            "cs": "Předpočítané spektrogramy hovoru více lidí v pozadí (jen pro validaci/test – měření falešných aktivací za hodinu).",
+            "en": "Pre-computed spectrograms of background conversation (validation/test only – measures false accepts per hour).",
+        },
         "size_mb": 82,
         "required": False,
         "url": HF_ROOT + "dinner_party_eval.zip",
@@ -37,7 +43,10 @@ DATASETS: dict[str, dict[str, Any]] = {
     },
     "dinner_party": {
         "title": "microWakeWord – dinner_party",
-        "description": "Předpočítané spektrogramy hovoru více lidí – volitelný rozšiřující negativní dataset pro trénování.",
+        "description": {
+            "cs": "Předpočítané spektrogramy hovoru více lidí – volitelný rozšiřující negativní dataset pro trénování.",
+            "en": "Pre-computed spectrograms of background conversation – optional extra negative dataset for training.",
+        },
         "size_mb": 444,
         "required": False,
         "url": HF_ROOT + "dinner_party.zip",

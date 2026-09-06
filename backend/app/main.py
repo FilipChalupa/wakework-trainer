@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import datasets, recordings, training
+from . import datasets, livetest, recordings, training
 from .config import DATA_DIR, DEFAULT_TRAINING, load_project, save_project
 
 app = FastAPI(title="Wake Word Trainer", version="1.0.0")
@@ -39,6 +39,7 @@ async def basic_auth(request: Request, call_next):
 app.include_router(recordings.router)
 app.include_router(datasets.router)
 app.include_router(training.router)
+app.include_router(livetest.router)
 
 
 @app.get("/api/health")

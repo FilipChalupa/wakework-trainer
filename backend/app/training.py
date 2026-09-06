@@ -46,7 +46,6 @@ RE_VALIDATION = re.compile(
     r"accuracy = ([\d.]+)%, recall = ([\d.]+)%, precision = ([\d.]+)%, ambient false positives = (\d+), "
     r"estimated false positives per hour = ([\d.]+), loss = ([\d.e+-]+), auc = ([\d.]+), average viable recall = ([\d.e+-]+)"
 )
-RE_FINAL = re.compile(r"Final TFLite model on the testing set: (.*)")
 RE_BEST = re.compile(r"So far the best minimization quantity is ([\d.]+) with best maximization quantity of ([\d.]+)%")
 
 MAX_LOG_LINES = 600
@@ -75,7 +74,10 @@ class JobManager:
             "job_id": None,
             "wake_word": None,
             "stage": None,
+            "stage_key": None,
             "message": None,
+            "message_key": None,
+            "message_params": None,
             "progress": {"current": 0, "total": 0},
             "step": 0,
             "total_steps": 0,
@@ -143,10 +145,10 @@ class JobManager:
     # ----- job lifecycle -------------------------------------------------
     def start(self) -> dict[str, Any]:
         if self.is_running():
-            raise HTTPException(409, "Training is already running")
+            raise HTTPException(409, {"code": "already_running", "message": "Training is already running"})
         positives = list_recordings("positive")
         if len(positives) < 3:
-            raise HTTPException(400, "Nahrajte alespoň 3 vzorky wake wordu (doporučeno 20–40).")
+            raise HTTPException(400, {"code": "too_few_samples", "message": "Record at least 3 wake word samples (20-40 recommended)."})
         project = load_project()
         job_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job_dir = JOBS_DIR / job_id
@@ -175,8 +177,11 @@ class JobManager:
             status="downloading",
             job_id=job_id,
             wake_word=project["wake_word"],
-            stage="Kontrola datasetů",
+            stage="Checking datasets",
+            stage_key="checking_datasets",
             message=None,
+            message_key=None,
+            message_params=None,
             started_at=_now(),
             total_steps=int(project["training"]["training_steps"]),
             eval_step_interval=int(project["training"]["eval_step_interval"]),
@@ -187,7 +192,7 @@ class JobManager:
 
     def cancel(self) -> dict[str, Any]:
         if not self.is_running():
-            raise HTTPException(409, "No training running")
+            raise HTTPException(409, {"code": "not_running", "message": "No training running"})
         self._cancel.set()
         proc = self._proc
         if proc and proc.poll() is None:
@@ -200,7 +205,7 @@ class JobManager:
             self._ensure_datasets()
             if self._cancel.is_set():
                 raise InterruptedError
-            self._update(status="preparing", stage="Příprava dat", progress={"current": 0, "total": 0})
+            self._update(status="preparing", stage="Preparing data", stage_key="preparing", progress={"current": 0, "total": 0})
             env = dict(os.environ)
             env.update({
                 "PYTHONUNBUFFERED": "1",
@@ -225,11 +230,11 @@ class JobManager:
                 raise RuntimeError(f"Trainer exited with code {code}")
             self._finish(job)
         except InterruptedError:
-            self._update(status="cancelled", stage="Zrušeno", finished_at=_now())
+            self._update(status="cancelled", stage="Cancelled", stage_key="cancelled", finished_at=_now())
             self._write_result(job_dir, "cancelled")
         except Exception as exc:  # noqa: BLE001
             self._log(f"ERROR: {exc}")
-            self._update(status="failed", stage="Chyba", error=str(exc), finished_at=_now())
+            self._update(status="failed", stage="Error", stage_key="failed", error=str(exc), finished_at=_now())
             self._write_result(job_dir, "failed", error=str(exc))
         finally:
             self._proc = None
@@ -238,14 +243,22 @@ class JobManager:
         for name, meta in datasets.DATASETS.items():
             if not meta["required"] or datasets.is_installed(name):
                 continue
-            self._update(status="downloading", stage=f"Stahuji {meta['title']}", progress={"current": 0, "total": meta["size_mb"] << 20})
+            self._update(
+                status="downloading",
+                stage=f"Downloading {meta['title']}",
+                stage_key="downloading_dataset",
+                message=None,
+                message_key=None,
+                message_params={"title": meta["title"]},
+                progress={"current": 0, "total": meta["size_mb"] << 20},
+            )
             self._log(f"Downloading dataset {name} from {meta['url']}")
 
             def progress(info: dict) -> None:
                 if "received" in info:
                     self._update(progress={"current": info["received"], "total": info.get("total") or (meta["size_mb"] << 20)})
                 if info.get("state") == "extracting":
-                    self._update(stage=f"Rozbaluji {meta['title']}")
+                    self._update(stage=f"Extracting {meta['title']}", stage_key="extracting_dataset", message_params={"title": meta["title"]})
 
             datasets.download(name, progress)
             self._log(f"Dataset {name} ready")
@@ -323,11 +336,6 @@ class JobManager:
             self._update(best={"minimization": float(m.group(1)), "maximization": float(m.group(2)) / 100.0})
             self._log(line)
             return
-        m = RE_FINAL.search(line)
-        if m:
-            self._update(final_metrics=m.group(1).strip())
-            self._log(line)
-            return
         if RE_TRAIN_STEP.search(line):
             self._log(line)
             return
@@ -336,7 +344,13 @@ class JobManager:
     def _handle_event(self, ev: dict[str, Any]) -> None:
         kind = ev.get("event")
         if kind == "stage":
-            fields: dict[str, Any] = {"stage": ev.get("name"), "message": ev.get("message")}
+            fields: dict[str, Any] = {
+                "stage": ev.get("name"),
+                "stage_key": ev.get("key"),
+                "message": ev.get("message"),
+                "message_key": ev.get("message_key"),
+                "message_params": ev.get("params"),
+            }
             if ev.get("status"):
                 fields["status"] = ev["status"]
             if "total" in ev:
@@ -351,9 +365,9 @@ class JobManager:
         elif kind == "training_config":
             self._update(total_steps=int(ev.get("total_steps", 0)), eval_step_interval=int(ev.get("eval_step_interval", 1)))
         elif kind == "final_metrics":
-            self._update(final_metrics=str(ev.get("summary", "")))
+            self._update(final_metrics=ev.get("summary"))
         elif kind == "done":
-            self._update(stage="Hotovo", message=ev.get("message"))
+            self._update(stage="Done", stage_key="done", message=ev.get("message"), message_key=ev.get("message_key"), message_params=ev.get("params"))
 
     def _finish(self, job: dict[str, Any]) -> None:
         job_dir = Path(job["job_dir"])
@@ -363,7 +377,8 @@ class JobManager:
             raise RuntimeError("Trainer finished but no .tflite model was produced")
         self._update(
             status="done",
-            stage="Hotovo",
+            stage="Done",
+            stage_key="done",
             progress={"current": self.state["total_steps"], "total": self.state["total_steps"]},
             model_url=f"/api/jobs/{job['job_id']}/model",
             manifest_url=f"/api/jobs/{job['job_id']}/manifest" if manifest.exists() else None,
