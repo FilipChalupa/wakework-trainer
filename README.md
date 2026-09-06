@@ -1,109 +1,121 @@
 # Wake Word Trainer
 
-*(English: a self-contained web app to record wake word samples, train a
-[microWakeWord](https://github.com/kahrendt/microWakeWord) model and test it live in the browser; the UI
-switches between Czech and English according to the browser language, with a manual override in the header.)*
+> 🇨🇿 Česká verze: [README.cs.md](README.cs.md)
 
-Samostatná webová aplikace pro nahrávání hlasových vzorků a trénování vlastního wake word modelu
-pomocí [microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → kvantizovaný streamovaný
-TensorFlow Lite model použitelný v ESPHome `micro_wake_word`).
+A self-contained web app for recording voice samples, training your own **wake word** model with
+[microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → quantised streaming TensorFlow Lite),
+and testing the result live in the browser. The output `.tflite` + manifest works directly with the ESPHome
+[`micro_wake_word`](https://esphome.io/components/micro_wake_word) component.
 
-- **Frontend:** Vite + React + TypeScript + Material UI (světlé/tmavé téma podle systému, čeština/angličtina podle jazyka prohlížeče)
-- **Backend:** FastAPI (Python 3.11), trénink běží jako subprocess, průběh se streamuje přes SSE
-- **Audio:** Web Audio API (AudioWorklet) → WAV 16 kHz / mono / 16-bit PCM; na serveru normalizace přes FFmpeg
+![Wake Word Trainer – dark theme](docs/screenshots/hero-dark.png)
 
-## Spuštění
+## Features
+
+- **Sample recording in the browser** – Web Audio API (AudioWorklet), fixed-length clips, WAV 16 kHz / mono / 16-bit PCM.
+  Series recording with countdown, playback after recording, play-all, microphone selection, quality checks
+  (clipped start/end, clipping, too quiet, silence), mini waveforms, bulk delete with undo, drag & drop import,
+  keyboard shortcuts (Space / R / Esc).
+- **Negative data handled for you** – Google *mini_speech_commands* is downloaded automatically; synthetic noise and a long
+  "ambient" recording for false-accept-per-hour estimation are generated; optional microWakeWord `dinner_party` sets.
+- **Training pipeline** – silence trimming + augmentation (audiomentations) → micro-frontend spectrograms → MixedNet training with the
+  original `microwakeword.model_train_eval` → int8 quantised streaming `.tflite`. Live progress over SSE: steps, loss,
+  accuracy, validation table, log.
+- **Live test** – microphone audio is streamed over WebSocket to the server, which runs the very same quantised streaming
+  model with the same micro-frontend and sliding-window average as ESPHome. Evaluate the model on all stored recordings
+  to see which samples are missed and which negatives trigger it.
+- **ESPHome manifest** – `probability_cutoff` is derived from the test-set ROC curve; tune it in the test card and copy it over.
+- **UI** – React + Material UI, light/dark theme following the system, Czech/English following the browser language (manual override in the header).
+- **Docker** – one command to run, optional NVIDIA GPU build (works in WSL2), optional HTTP Basic auth.
+
+| Recording | Training |
+| --- | --- |
+| ![Recording](docs/screenshots/recording.png) | ![Training](docs/screenshots/training-progress.png) |
+
+| Live test & evaluation | Datasets |
+| --- | --- |
+| ![Test](docs/screenshots/test.png) | ![Datasets](docs/screenshots/datasets.png) |
+
+## Quick start
 
 ```bash
-# CPU (funguje všude)
+# CPU (works everywhere)
 docker compose up --build
 
-# NVIDIA GPU (Docker + nvidia-container-toolkit, funguje i ve WSL2)
+# NVIDIA GPU (Docker + nvidia-container-toolkit; works in WSL2)
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
-# …nebo: cp .env.example .env  (obsahuje COMPOSE_FILE=…gpu.yml) a pak stačí `docker compose up --build`
+# …or: cp .env.example .env   (sets COMPOSE_FILE to include the GPU override) and just `docker compose up --build`
 ```
 
-Aplikace běží na <http://localhost:8000>. Všechna data (nahrávky, datasety, modely) jsou ve svazku `./data`
-(kontejner běží jako root, soubory v `./data` proto patří rootovi – k úklidu použijte `sudo rm` nebo
-`docker compose exec app rm -rf /data/jobs/...`).
+Open <http://localhost:8000>. Everything (recordings, datasets, feature cache, models) lives in `./data`
+(the container runs as root, so files in `./data` are root-owned).
 
-**WSL2 + NVIDIA:** stačí nainstalovaný Windows ovladač NVIDIA a v Docker Desktopu (nebo Docker Engine ve WSL)
-`nvidia-container-toolkit`. Ověření: `docker compose exec app python -c "import tensorflow as tf; print(tf.config.list_physical_devices('GPU'))"`.
-Bez GPU trénink také funguje – tento model je malý (~30 k parametrů), na CPU trvá výchozích 4 000 kroků řádově
-jednotky až nižší desítky minut. První trénink navíc jednorázově předpočítá spektrogramy negativního datasetu
-(cca 1–2 min, výsledek se ukládá do `data/features_cache`).
+> The microphone only works in a secure context – `localhost` or HTTPS. From another machine use an SSH tunnel
+> (`ssh -L 8000:localhost:8000 host`) or an HTTPS reverse proxy.
 
-> Mikrofon v prohlížeči funguje jen v „secure context“ – tedy na `localhost` nebo přes HTTPS.
-> Pokud k aplikaci přistupujete z jiného počítače v síti, použijte HTTPS reverse proxy nebo SSH tunel
-> (`ssh -L 8000:localhost:8000 …`).
+**GPU is optional.** The model is tiny (~30 k parameters); the default 4,000 steps take minutes on a CPU. The first run
+additionally pre-computes spectrograms of the negative dataset once (~1–2 min, cached in `data/features_cache`).
 
-Volitelně lze nastavit HTTP Basic auth proměnnými `APP_USER` / `APP_PASSWORD` (viz `.env.example`).
+Optional Basic auth: set `APP_USER` / `APP_PASSWORD` (see `.env.example`).
 
-## Postup
+## Workflow
 
-1. **Konfigurace** – zadejte wake word (např. `chaloupko`), délku vzorku a případně upravte parametry trénování
-   (kroky, learning rate, batch size, počet augmentací…).
-2. **Nahrávání** – tlačítkem nebo mezerníkem nahrajete vzorek pevné délky. K dispozici je sériové nahrávání
-   s odpočtem, přehrání po nahrání, přehrát vše, výběr mikrofonu, kontrola kvality (oříznutí, přebuzení, ticho),
-   mini vlnovka u každé nahrávky, hromadné mazání s možností vrátit zpět a import existujících audio souborů
-   (drag & drop). Doporučeno 20–40 vzorků. Volitelně můžete nahrát i vlastní negativní vzorky (jiná řeč, hluk).
-3. **Negativní datasety** – základní dataset (Google *mini_speech_commands*, ~180 MB) se stáhne automaticky
-   před prvním tréninkem. Volitelně lze stáhnout předpočítané spektrogramy `dinner_party` / `dinner_party_eval`
-   z microWakeWord (Hugging Face).
-4. **Trénování** – spustí pipeline: augmentace pozitivních vzorků → spektrogramy (microWakeWord micro-frontend)
-   → syntetický šum + ambientní záznam pro odhad falešných aktivací → trénink MixedNet → kvantizace a konverze
-   na streamovaný `.tflite`. Průběh (kroky, loss, přesnost, validace, log) se zobrazuje živě.
-5. **Stažení** – po dokončení stáhnete `<wakeword>.tflite` a manifest JSON pro ESPHome. `probability_cutoff`
-   v manifestu se odvodí z ROC křivky na testovací sadě (omezeno na 0.6–0.97) a lze jej ručně doladit.
-6. **Otestování v prohlížeči** – audio z mikrofonu se streamuje WebSocketem na server, kde běží stejný
-   kvantizovaný streamovaný `.tflite` model (micro-frontend + klouzavý průměr jako v ESPHome). Vidíte živou
-   pravděpodobnost, práh a počet detekcí; práh a okno lze měnit a přenést do manifestu. Tlačítko „Vyhodnotit na
-   nahrávkách“ pustí model přes všechny uložené vzorky a ukáže, které wake wordy model nerozpozná a které
-   negativní nahrávky ho falešně spustí.
+1. **Configure** – wake word (e.g. `chaloupko`), sample length, optionally training parameters (steps, learning rate, batch
+   size, augmentations per sample, model window, negative class weight).
+2. **Record** – 20–40 samples recommended, ideally several speakers, distances and intonations. Optionally record negative
+   samples (other speech, similar words, room noise).
+3. **Datasets** – the base negative dataset downloads automatically before the first run; extra sets are optional.
+4. **Train** – watch the progress live; the best weights (by *average viable recall*) are converted and quantised.
+5. **Download** – `<wakeword>.tflite` and `<wakeword>.json` (ESPHome manifest).
+6. **Test** – listen live, tune threshold/window, evaluate on your recordings.
 
-## Použití v ESPHome
+### Using the model in ESPHome
 
 ```yaml
 micro_wake_word:
   models:
-    - model: chaloupko.json   # manifest vedle .tflite, oba soubory v config složce ESPHome
+    - model: chaloupko.json   # manifest next to chaloupko.tflite in the ESPHome config folder
 ```
 
-Hodnotu `probability_cutoff` v manifestu (výchozí 0.97) podle potřeby snižte (snazší spouštění) nebo zvyšte
-(méně falešných aktivací).
+Lower `probability_cutoff` if the word is hard to trigger; raise it on false activations.
 
 ## API
 
-| Metoda | Cesta | Popis |
+| Method | Path | Description |
 | --- | --- | --- |
-| GET/PUT | `/api/config` | Konfigurace projektu (wake word, parametry trénování) |
-| GET | `/api/recordings?kind=positive|negative` | Seznam nahrávek vč. vlnovky a kontroly kvality |
-| POST | `/api/recordings` | Upload (multipart `file`, `kind`) – uloží do `/data/positive_samples` nebo `/data/negative_samples` |
-| GET | `/api/recordings/{kind}/{id}` | Přehrání WAV |
-| DELETE | `/api/recordings/{kind}/{id}` | Smazání (do koše), `POST …/restore` vrátí zpět |
-| GET | `/api/datasets` · POST `/api/datasets/{id}/download` | Negativní datasety |
-| POST | `/api/train` · POST `/api/train/cancel` · GET `/api/train` | Spuštění / zrušení / snapshot trénování |
+| GET / PUT | `/api/config` | Project configuration (wake word, training parameters) |
+| GET | `/api/recordings?kind=positive\|negative` | Recordings incl. waveform peaks and quality analysis |
+| POST | `/api/recordings` | Upload (multipart `file`, `kind`) → `/data/positive_samples` or `/data/negative_samples` |
+| GET | `/api/recordings/{kind}/{id}` | Play a WAV |
+| DELETE | `/api/recordings/{kind}/{id}` | Soft delete (trash), `POST …/restore` restores |
+| GET / POST | `/api/datasets` · `/api/datasets/{id}/download` | Negative datasets |
+| POST / GET | `/api/train` · `/api/train/cancel` · `/api/train` | Start / cancel / snapshot |
 | GET | `/api/train/status` | SSE stream (`snapshot`, `state`, `log`) |
-| GET | `/api/train/model` | Stažení posledního natrénovaného `.tflite` |
-| GET | `/api/jobs` · `/api/jobs/{id}/model` · `/api/jobs/{id}/manifest` · `/api/jobs/{id}/log` | Historie běhů |
-| WS | `/api/test/ws?job_id=…&cutoff=…&window=…` | Živý test: binární int16 16 kHz PCM → JSON s pravděpodobnostmi a detekcemi |
-| POST | `/api/jobs/{id}/evaluate?cutoff=…&window=…` | Vyhodnocení modelu na uložených nahrávkách |
+| GET | `/api/train/model` | Latest trained `.tflite` |
+| GET | `/api/jobs` · `/api/jobs/{id}/model` · `/api/jobs/{id}/manifest` · `/api/jobs/{id}/log` | Run history |
+| WS | `/api/test/ws?job_id=…&cutoff=…&window=…` | Live test: binary int16 16 kHz PCM in → JSON probabilities/detections out |
+| POST | `/api/jobs/{id}/evaluate?cutoff=…&window=…` | Evaluate a model on the stored recordings |
 
-## Struktura
+## Project layout
 
 ```
-backend/app        FastAPI (config, recordings, datasets, training/SSE, static frontend)
-backend/trainer    Trénovací pipeline (run.py) + audio pomocné funkce
-frontend           Vite + React + MUI
-data/              (vytvoří se) nahrávky, datasety, cache spektrogramů, běhy trénování
+backend/app        FastAPI (config, recordings, datasets, training + SSE, live test, static frontend)
+backend/trainer    Training pipeline (run.py) and audio helpers
+frontend           Vite + React + TypeScript + Material UI
+docs/screenshots   README images
+data/              (created at runtime) recordings, datasets, feature cache, training runs
 ```
 
-## Vývoj bez Dockeru
+## Development without Docker
 
 ```bash
-# backend
 cd backend && pip install -r requirements.txt tensorflow==2.19.0
+git clone https://github.com/kahrendt/microWakeWord /opt/microWakeWord && pip install --no-deps -e /opt/microWakeWord
 DATA_DIR=../data uvicorn app.main:app --reload
-# frontend (proxy /api -> :8000)
+# frontend (proxies /api to :8000)
 cd frontend && npm install && npm run dev
 ```
+
+## Credits
+
+Built on [microWakeWord](https://github.com/kahrendt/microWakeWord) by Kevin Ahrendt (Apache 2.0). Negative speech data:
+Google Speech Commands (CC BY 4.0). Trained models inherit the licences of the data used.

@@ -65,6 +65,47 @@ class JobManager:
         self.state: dict[str, Any] = self._idle_state()
         self.log: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self._last_minibatch_emit = 0.0
+        self._restore_last_job()
+
+    def _restore_last_job(self) -> None:
+        """After a restart, show the outcome of the most recent job instead of an empty idle state."""
+        try:
+            for job_dir in sorted(JOBS_DIR.iterdir(), reverse=True):
+                job_file, result_file = job_dir / "job.json", job_dir / "result.json"
+                if not (job_file.is_file() and result_file.is_file()):
+                    continue
+                job = json.loads(job_file.read_text())
+                result = json.loads(result_file.read_text())
+                status = result.get("status")
+                if status not in ("done", "failed", "cancelled"):
+                    continue
+                model = job_dir / f"{job.get('slug', 'wakeword')}.tflite"
+                manifest = job_dir / f"{job.get('slug', 'wakeword')}.json"
+                total = int(job.get("training", {}).get("training_steps", 0))
+                self.state.update({
+                    "status": status,
+                    "job_id": job["job_id"],
+                    "wake_word": job.get("wake_word"),
+                    "stage": {"done": "Done", "failed": "Error", "cancelled": "Cancelled"}[status],
+                    "stage_key": status,
+                    "progress": {"current": total if status == "done" else 0, "total": total},
+                    "step": total if status == "done" else 0,
+                    "total_steps": total,
+                    "validation": result.get("validation") or [],
+                    "best": result.get("best"),
+                    "final_metrics": result.get("final_metrics"),
+                    "error": result.get("error"),
+                    "model_url": f"/api/jobs/{job['job_id']}/model" if model.exists() else None,
+                    "manifest_url": f"/api/jobs/{job['job_id']}/manifest" if manifest.exists() else None,
+                    "started_at": job.get("created_at"),
+                    "finished_at": result.get("finished_at"),
+                })
+                log_file = job_dir / "train.log"
+                if log_file.is_file():
+                    self.log.extend(log_file.read_text().splitlines()[-MAX_LOG_LINES:])
+                return
+        except Exception:  # noqa: BLE001  (best effort only)
+            pass
 
     # ----- state helpers -------------------------------------------------
     @staticmethod

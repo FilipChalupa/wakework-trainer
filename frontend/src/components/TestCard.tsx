@@ -179,7 +179,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
                 </Typography>
                 <Slider size="small" min={0.3} max={0.99} step={0.01} value={cutoff} onChange={(_, v) => setCutoff(v as number)} disabled={active} />
               </Box>
-              <TextField select size="small" label={t("test.window")} value={window} onChange={(e) => setWindow(Number(e.target.value))} sx={{ minWidth: 120 }} disabled={active}>
+              <TextField select size="small" label={t("test.window")} value={window} onChange={(e) => setWindow(Number(e.target.value))} sx={{ minWidth: 170 }} disabled={active}>
                 {[1, 3, 5, 7, 10].map((n) => (
                   <MenuItem key={n} value={n}>
                     {n}
