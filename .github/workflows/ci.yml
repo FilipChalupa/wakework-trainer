@@ -52,7 +52,7 @@ jobs:
       - name: Smoke-test the UI with Playwright
         run: |
           docker run --rm --network host -v "$PWD/tests/e2e:/e2e" mcr.microsoft.com/playwright:v1.52.0-noble \
-            sh -c "cd /tmp && npm init -y >/dev/null && npm i -s playwright@1.52.0 >/dev/null && node /e2e/smoke.js"
+            sh -c "cd /tmp && npm init -y >/dev/null && npm i -s playwright@1.52.0 >/dev/null && cp /e2e/smoke.js /tmp/smoke.js && node /tmp/smoke.js"
       - name: Container logs
         if: always()
         run: docker logs app
