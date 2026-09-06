@@ -1,8 +1,7 @@
-"""Training job manager: runs the trainer as a subprocess, parses its output, streams it via SSE."""
+"""Training job manager: runs the trainer as a subprocess, parses its output, streams it via SSE; job routes."""
 from __future__ import annotations
 
 import asyncio
-import io
 import json
 import os
 import re
@@ -12,29 +11,17 @@ import sys
 import threading
 import time
 import uuid
-import zipfile
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from . import datasets
-from .config import (
-    DATASETS_DIR,
-    FEATURE_CACHE_DIR,
-    KEEP_JOBS,
-    PROJECTS_DIR,
-    Project,
-    current_project,
-    get_project,
-    list_projects,
-    load_settings,
-    slugify,
-)
+from .config import DATASETS_DIR, FEATURE_CACHE_DIR, KEEP_JOBS, PROJECTS_DIR, Project, current_project, list_projects, load_settings, slugify
 from .recordings import list_recordings
 
 router = APIRouter(prefix="/api", tags=["training"])
@@ -757,74 +744,6 @@ def job_log(job_id: str):
     return FileResponse(log, media_type="text/plain")
 
 
-def wyoming_readme(slug: str, wake_word: str) -> str:
-    return f"""openWakeWord model '{wake_word}' for Wyoming satellites / the Home Assistant openWakeWord add-on.
-
-Home Assistant add-on:  copy {slug}.tflite into /share/openwakeword/ (Samba or SSH add-on), restart the add-on,
-                        then pick "{slug}" as the wake word in the Assist pipeline / satellite.
-
-wyoming-openwakeword (Docker):
-  services:
-    openwakeword:
-      image: rhasspy/wyoming-openwakeword
-      command: --preload-model {slug} --custom-model-dir /custom --threshold 0.5
-      volumes:
-        - ./models:/custom          # put {slug}.tflite here
-      ports:
-        - "10400:10400"
-
-wyoming-satellite: add `--wake-uri tcp://<host>:10400 --wake-word-name {slug}`.
-Threshold: 0.5 is the openWakeWord default; raise it on false activations, lower it if the word is hard to trigger
-(the "auto threshold" in the training summary is a good starting point).
-"""
-
-
-def esphome_snippet(slug: str, wake_word: str) -> str:
-    return f"""# Example ESPHome configuration for the "{wake_word}" wake word.
-# Copy {slug}.tflite and {slug}.json next to this YAML (or point `model:` to a URL).
-micro_wake_word:
-  models:
-    - model: {slug}.json
-  on_wake_word_detected:
-    - logger.log:
-        format: "Wake word detected: %s"
-        args: ['x.c_str()']
-    # - voice_assistant.start:
-    #     wake_word: !lambda return x;
-
-# Tuning: if "{wake_word}" is hard to trigger, lower "probability_cutoff" in {slug}.json;
-# if it triggers falsely, raise it (0.5 - 0.99).
-"""
-
-
-@router.get("/jobs/{job_id}/export")
-def job_export(job_id: str):
-    model, job = _job_file(job_id, ".tflite")
-    job_dir = model.parent
-    slug = job.get("slug", "wakeword")
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.write(model, f"{slug}/{model.name}")
-        manifest = job_dir / f"{slug}.json"
-        if manifest.exists():
-            zf.write(manifest, f"{slug}/{manifest.name}")
-        if (job.get("training") or {}).get("target") == "wyoming":
-            zf.writestr(f"{slug}/WYOMING.txt", wyoming_readme(slug, job.get("wake_word", slug)))
-        else:
-            zf.writestr(f"{slug}/esphome-example.yaml", esphome_snippet(slug, job.get("wake_word", slug)))
-        for extra in ("training_parameters.yaml", "result.json", "train.log"):
-            if (job_dir / extra).exists():
-                zf.write(job_dir / extra, f"{slug}/training/{extra}")
-        readme = (
-            f"Wake word model '{job.get('wake_word')}' trained with Wake Word Trainer / microWakeWord on {job.get('created_at')}.\n\n"
-            f"Files:\n  {slug}.tflite         quantised streaming TensorFlow Lite model\n  {slug}.json           ESPHome micro_wake_word manifest\n"
-            f"  esphome-example.yaml  example ESPHome configuration\n  training/             training parameters, metrics and log\n"
-        )
-        zf.writestr(f"{slug}/README.txt", readme)
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{slug}-wakeword.zip"'})
-
-
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
     job_dir = find_job_dir(job_id)
@@ -836,144 +755,3 @@ def delete_job(job_id: str):
     return {"deleted": job_id}
 
 
-# ----- projects -----------------------------------------------------------------
-@router.get("/projects")
-def get_projects():
-    return {"items": list_projects(), "current": current_project().id}
-
-
-@router.post("/projects")
-async def post_project(body: dict[str, Any]):
-    from .config import create_project, select_project
-
-    name = str(body.get("name", "")).strip()
-    if not name:
-        raise HTTPException(400, {"code": "name_required", "message": "Project name is required"})
-    if manager.is_running():
-        raise HTTPException(409, {"code": "already_running", "message": "Cannot switch projects while training"})
-    project = create_project(name, str(body.get("wake_word") or name))
-    select_project(project.id)
-    manager.load_project_state(project)
-    return {"items": list_projects(), "current": project.id}
-
-
-@router.post("/projects/{pid}/select")
-def post_select(pid: str):
-    from .config import select_project
-
-    if manager.is_running():
-        raise HTTPException(409, {"code": "already_running", "message": "Cannot switch projects while training"})
-    try:
-        project = select_project(pid)
-    except KeyError:
-        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
-    manager.load_project_state(project)
-    return {"items": list_projects(), "current": project.id}
-
-
-@router.delete("/projects/{pid}")
-def delete_project_route(pid: str):
-    from .config import delete_project
-
-    if manager.is_running():
-        raise HTTPException(409, {"code": "already_running", "message": "Cannot delete projects while training"})
-    try:
-        get_project(pid)
-        delete_project(pid)
-    except KeyError:
-        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
-    manager.load_project_state(current_project())
-    return {"items": list_projects(), "current": current_project().id}
-
-
-EXPORT_JOB_FILES = ("job.json", "result.json", "train.log", "training_parameters.yaml")
-
-
-@router.get("/projects/{pid}/export")
-def export_project(pid: str):
-    """ZIP with recordings, settings and the light-weight outputs of every run (no feature caches / checkpoints)."""
-    try:
-        project = get_project(pid)
-    except KeyError:
-        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
-    settings = load_settings(project)
-    settings["share_token"] = None
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr("project.json", json.dumps(settings, indent=2, ensure_ascii=False))
-        for kind in ("positive_samples", "negative_samples"):
-            folder = project.dir / kind
-            for f in sorted(folder.glob("*.wav")) + [folder / "meta.json"]:
-                if f.exists():
-                    zf.write(f, f"{kind}/{f.name}")
-        for job_dir in sorted(project.jobs_dir.iterdir()):
-            if not job_dir.is_dir():
-                continue
-            job = _read_json(job_dir / "job.json")
-            slug = job.get("slug", "wakeword")
-            for name in EXPORT_JOB_FILES + (f"{slug}.tflite", f"{slug}.json"):
-                if (job_dir / name).exists():
-                    zf.write(job_dir / name, f"jobs/{job_dir.name}/{name}")
-    buffer.seek(0)
-    return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{pid}-project.zip"'})
-
-
-@router.post("/projects/import")
-async def import_project(file: UploadFile = File(...)):
-    from .config import create_project, select_project, write_settings
-
-    if manager.is_running():
-        raise HTTPException(409, {"code": "already_running", "message": "Cannot import while training"})
-    raw = await file.read()
-    try:
-        zf = zipfile.ZipFile(io.BytesIO(raw))
-        settings = json.loads(zf.read("project.json"))
-    except (zipfile.BadZipFile, KeyError, json.JSONDecodeError) as exc:
-        raise HTTPException(400, {"code": "bad_archive", "message": f"Not a project archive: {exc}"}) from exc
-    project = create_project(str(settings.get("name") or settings.get("wake_word") or "imported"), str(settings.get("wake_word") or "wakeword"))
-    root = project.dir.resolve()
-    for member in zf.infolist():
-        if member.is_dir():
-            continue
-        target = (root / member.filename).resolve()
-        if root not in target.parents or member.filename == "project.json":
-            continue
-        top = member.filename.split("/")[0]
-        if top not in ("positive_samples", "negative_samples", "jobs"):
-            continue
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(zf.read(member))
-    # rewrite absolute paths inside job.json files to the new location
-    for job_file in project.jobs_dir.glob("*/job.json"):
-        job = _read_json(job_file)
-        job.update({
-            "project_id": project.id,
-            "positive_dir": str(project.positive_dir),
-            "negative_dir": str(project.negative_dir),
-            "datasets_dir": str(DATASETS_DIR),
-            "feature_cache_dir": str(FEATURE_CACHE_DIR),
-            "job_dir": str(job_file.parent),
-        })
-        job_file.write_text(json.dumps(job, indent=2, ensure_ascii=False))
-    merged = load_settings(project)
-    for key in ("wake_word", "max_record_seconds", "contributor_target", "webhook_url"):
-        if key in settings:
-            merged[key] = settings[key]
-    merged["training"].update(settings.get("training", {}))
-    merged["share_token"] = None
-    write_settings(project, merged)
-    select_project(project.id)
-    manager.load_project_state(project)
-    return {"items": list_projects(), "current": project.id}
-
-
-@router.post("/projects/{pid}/share")
-async def post_share(pid: str, body: dict[str, Any]):
-    from .config import set_share_token
-
-    try:
-        project = get_project(pid)
-    except KeyError:
-        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
-    token = set_share_token(project, bool(body.get("enabled", True)))
-    return {"share_token": token}

@@ -1,4 +1,5 @@
-from app.training import esphome_snippet, parse_minibatch_line, parse_validation_line
+from app.export import esphome_snippet
+from app.jobs import parse_minibatch_line, parse_validation_line
 
 
 def test_parse_minibatch_line():
@@ -31,7 +32,7 @@ def test_interrupted_job_detected_after_restart(tmp_path):
     """A job without result.json and without a running manager is reported as interrupted/resumable."""
     import json
 
-    from app.training import job_summary
+    from app.jobs import job_summary
 
     job_dir = tmp_path / "20260101_000000_abc"
     (job_dir / "features").mkdir(parents=True)
@@ -45,7 +46,7 @@ def test_webhook_payload(tmp_path, monkeypatch):
     """The webhook receives a JSON summary; network errors are swallowed (logged only)."""
     import json
 
-    from app import training
+    from app import jobs as training
 
     job_dir = tmp_path / "20260101_000000_abc"
     job_dir.mkdir()

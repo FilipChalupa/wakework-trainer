@@ -172,8 +172,9 @@ Lower `probability_cutoff` if the word is hard to trigger; raise it on false act
 ## Project layout
 
 ```
-backend/app        FastAPI (config, recordings, datasets, training + SSE, live test, static frontend)
-backend/trainer    Training pipeline (run.py) and audio helpers
+backend/app        FastAPI: config, recordings, datasets, jobs (training manager + SSE), projects, export, detectors,
+                   livetest, monitor, public (token URLs, device events), system, static frontend
+backend/trainer    Training pipelines: run.py (microWakeWord), oww_train.py + oww_features.py (openWakeWord), audio helpers
 backend/tests      pytest suite (no TensorFlow needed: `pip install -r backend/requirements-dev.txt && cd backend && pytest`)
 frontend           Vite + React + TypeScript + Material UI
 tests/e2e          Playwright smoke test used in CI against the Docker image, screenshots.js re-creates the README images

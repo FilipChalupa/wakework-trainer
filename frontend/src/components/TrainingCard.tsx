@@ -13,7 +13,9 @@ import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import ArchiveIcon from "@mui/icons-material/Archive";
 import { api, type TrainingState } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
-import { TrainingCharts } from "./TrainingCharts";
+import { lazy, Suspense } from "react";
+
+const TrainingCharts = lazy(() => import("./TrainingCharts").then((m) => ({ default: m.TrainingCharts })));
 
 type Props = {
   state: TrainingState;
@@ -333,7 +335,11 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, t
             </Alert>
           )}
 
-          {state.validation.length > 1 && <TrainingCharts validation={state.validation} roc={state.final_metrics?.points} />}
+          {state.validation.length > 1 && (
+            <Suspense fallback={<LinearProgress />}>
+              <TrainingCharts validation={state.validation} roc={state.final_metrics?.points} />
+            </Suspense>
+          )}
 
           {state.status === "failed" && (
             <Alert severity="error">

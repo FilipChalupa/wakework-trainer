@@ -73,7 +73,7 @@ def test_monitor_endpoints_and_review_flag(tmp_path):
 
 def test_monitor_adopt_all_moves_files():
     from app import config
-    from app.livetest import monitor_dir
+    from app.monitor import monitor_dir
 
     import numpy as np
     import soundfile as sf

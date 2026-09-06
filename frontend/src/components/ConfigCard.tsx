@@ -6,7 +6,6 @@ import LinkOffIcon from "@mui/icons-material/LinkOff";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import TuneIcon from "@mui/icons-material/Tune";
 import SaveIcon from "@mui/icons-material/Save";
-import QRCode from "qrcode";
 import QrCode2Icon from "@mui/icons-material/QrCode2";
 import { api, type Contributor, type Project, type TrainingParams } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
@@ -154,7 +153,10 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
       setQr(null);
       return;
     }
-    QRCode.toDataURL(link, { width: 220, margin: 1 }).then(setQr).catch(() => setQr(null));
+    import("qrcode")
+      .then((QRCode) => QRCode.toDataURL(link, { width: 220, margin: 1 }))
+      .then(setQr)
+      .catch(() => setQr(null));
   }, [link]);
 
   useEffect(() => {

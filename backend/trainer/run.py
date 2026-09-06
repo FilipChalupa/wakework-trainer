@@ -559,7 +559,7 @@ def auto_threshold(job: dict, model_path: Path, windows: tuple[int, ...] = (3, 5
     """Runs the streaming model over the project's own recordings and derives a probability cutoff that
     lets ~95 % of the wake word recordings through while staying above every negative recording."""
     try:
-        from app.livetest import evaluate_clip, _load_pcm16  # noqa: PLC0415
+        from app.detectors import _load_pcm16, evaluate_clip  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001
         log(f"Auto threshold skipped: {exc}")
         return None

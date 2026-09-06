@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, FormControlLabel, IconButton, LinearProgress, MenuItem, Slider, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, TextField, Tooltip, Typography, useTheme } from "@mui/material";
-import PlayArrowIcon from "@mui/icons-material/PlayArrow";
-import DeleteIcon from "@mui/icons-material/Delete";
-import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
-import FlagIcon from "@mui/icons-material/Flag";
+import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, FormControlLabel, LinearProgress, MenuItem, Slider, Stack, Switch, TextField, Typography, useTheme } from "@mui/material";
 import HearingIcon from "@mui/icons-material/Hearing";
 import StopIcon from "@mui/icons-material/Stop";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import { api, type Evaluation, type Job, type MonitorItem } from "../api";
-import { errorText, useI18n, type TKey } from "../i18n";
+import { MonitorPanel } from "./MonitorPanel";
+import { EvaluationTable } from "./EvaluationTable";
+import { errorText, useI18n } from "../i18n";
 import { Recorder } from "../lib/recorder";
 
 type Props = { jobs: Job[]; wakeWord: string; disabled: boolean; onError: (message: string) => void; onInfo?: (message: string) => void };
@@ -317,55 +315,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
               </Typography>
             )}
 
-            <Box sx={{ p: 1.5, border: 1, borderColor: "divider", borderRadius: 2 }}>
-              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.5 }}>
-                <Typography variant="subtitle2" sx={{ flex: 1 }}>
-                  {t("monitor.title")}
-                </Typography>
-                {saved.length > 0 && (
-                  <>
-                    <Button size="small" variant="contained" onClick={retrainWithMonitor} disabled={disabled || active}>
-                      {t("monitor.retrain")}
-                    </Button>
-                    <Button size="small" color="error" onClick={clearSaved}>
-                      {t("monitor.clear")}
-                    </Button>
-                  </>
-                )}
-              </Stack>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                {t("monitor.help")}
-              </Typography>
-              {saved.length === 0 ? (
-                <Typography variant="caption" color="text.secondary">
-                  {t("monitor.empty")}
-                </Typography>
-              ) : (
-                <Stack spacing={0.5} sx={{ maxHeight: 240, overflow: "auto" }}>
-                  {saved.map((item) => (
-                    <Stack key={item.id} direction="row" spacing={1} alignItems="center">
-                      <IconButton size="small" onClick={() => playSaved(item)}>
-                        <PlayArrowIcon />
-                      </IconButton>
-                      <Typography variant="body2" sx={{ flex: 1 }} noWrap>
-                        {new Date(item.created).toLocaleString()} · {item.duration.toFixed(1)} s
-                      </Typography>
-                      <Chip size="small" variant="outlined" label={t("monitor.source.browser")} />
-                      <Tooltip title={t("monitor.toNegative")}>
-                        <IconButton size="small" color="primary" onClick={() => toNegative(item)}>
-                          <AddCircleOutlineIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title={t("monitor.delete")}>
-                        <IconButton size="small" onClick={() => removeSaved(item)}>
-                          <DeleteIcon />
-                        </IconButton>
-                      </Tooltip>
-                    </Stack>
-                  ))}
-                </Stack>
-              )}
-            </Box>
+            <MonitorPanel saved={saved} disabled={disabled || active} onPlay={playSaved} onToNegative={toNegative} onDelete={removeSaved} onClear={clearSaved} onRetrain={retrainWithMonitor} />
 
             <Alert severity="info" variant="outlined">
               {t("test.hint")}
@@ -378,86 +328,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
               {evaluating && <LinearProgress sx={{ flex: 1 }} />}
             </Stack>
 
-            {evaluation && (
-              <Box>
-                <Typography variant="body2" gutterBottom>
-                  {t("test.evalSummary", {
-                    pd: evaluation.summary.positive_detected,
-                    pt: evaluation.summary.positive_total,
-                    nt: evaluation.summary.negative_triggered,
-                    ntot: evaluation.summary.negative_total,
-                    cutoff: evaluation.cutoff.toFixed(2),
-                  })}
-                </Typography>
-                {evaluation.summary.outliers > 0 && (
-                  <Alert
-                    severity="warning"
-                    variant="outlined"
-                    sx={{ mb: 1 }}
-                    action={
-                      <Button color="inherit" size="small" startIcon={<FlagIcon />} onClick={flagOutliers} disabled={flagged !== null}>
-                        {t("eval.flag")}
-                      </Button>
-                    }
-                  >
-                    {t("eval.outliers", { n: evaluation.summary.outliers })} – {t("eval.outliersHelp", { median: Math.round(evaluation.summary.median_positive * 100) })}
-                    {flagged !== null && ` ${t("eval.flagged", { n: flagged })}`}
-                  </Alert>
-                )}
-                {Object.keys(evaluation.summary.by_tag ?? {}).length > 1 && (
-                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }} alignItems="center">
-                    <Typography variant="caption" color="text.secondary">
-                      {t("test.byTag")}:
-                    </Typography>
-                    {Object.entries(evaluation.summary.by_tag).map(([tg, v]) => (
-                      <Chip key={tg} size="small" variant="outlined" color={v.detected === v.total ? "success" : v.detected === 0 ? "error" : "warning"} label={`${t(`tag.${tg}` as TKey)}: ${v.detected} / ${v.total}`} />
-                    ))}
-                  </Stack>
-                )}
-                <Box sx={{ maxHeight: 320, overflow: "auto" }}>
-                  <Table size="small" stickyHeader>
-                    <TableHead>
-                      <TableRow>
-                        <TableCell>{t("test.t.recording")}</TableCell>
-                        <TableCell>{t("test.t.kind")}</TableCell>
-                        <TableCell>{t("test.t.max")}</TableCell>
-                        <TableCell>{t("test.t.result")}</TableCell>
-                      </TableRow>
-                    </TableHead>
-                    <TableBody>
-                      {evaluation.items.map((item) => {
-                        const ok = item.kind === "positive" ? item.detections > 0 : item.detections === 0;
-                        const label = item.kind === "positive" ? (ok ? t("test.r.ok") : t("test.r.missed")) : ok ? t("test.r.ok") : t("test.r.false");
-                        const p = item.max_probability ?? 0;
-                        return (
-                          <TableRow key={item.id} hover selected={item.outlier}>
-                            <TableCell>
-                              <Typography variant="body2" component="a" href={item.url} target="_blank" rel="noreferrer" sx={{ color: "inherit" }}>
-                                {item.id}
-                              </Typography>
-                              {item.outlier && <Chip size="small" color="warning" label={t("rec.review")} sx={{ ml: 1, height: 18, fontSize: 11 }} />}
-                            </TableCell>
-                            <TableCell>
-                              {t(item.kind === "positive" ? "test.kind.positive" : "test.kind.negative")}
-                              {item.tag && item.tag !== "normal" ? ` · ${t(`tag.${item.tag}` as TKey)}` : ""}
-                            </TableCell>
-                            <TableCell sx={{ minWidth: 160 }}>
-                              <Stack direction="row" spacing={1} alignItems="center">
-                                <LinearProgress variant="determinate" value={p * 100} sx={{ flex: 1, height: 8, borderRadius: 4 }} color={p >= evaluation.cutoff ? "success" : "inherit"} />
-                                <Typography variant="caption">{(p * 100).toFixed(0)} %</Typography>
-                              </Stack>
-                            </TableCell>
-                            <TableCell>
-                              <Chip size="small" label={item.error ?? label} color={item.error ? "default" : ok ? "success" : "error"} variant={ok ? "outlined" : "filled"} />
-                            </TableCell>
-                          </TableRow>
-                        );
-                      })}
-                    </TableBody>
-                  </Table>
-                </Box>
-              </Box>
-            )}
+            {evaluation && <EvaluationTable evaluation={evaluation} flagged={flagged} onFlagOutliers={flagOutliers} />}
           </Stack>
         )}
       </CardContent>

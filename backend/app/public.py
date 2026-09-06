@@ -28,7 +28,7 @@ def _project(token: str) -> Project:
 
 
 def latest_done_job(project: Project) -> dict[str, Any] | None:
-    from .training import list_jobs
+    from .jobs import list_jobs
 
     for job in list_jobs(project):
         if job["status"] == "done" and job["model_url"]:
@@ -100,7 +100,7 @@ def get_public_urls(pid: str, request: Request):
     target = job["target"] if job else settings["training"].get("target", "esphome")
     slug = job["slug"] if job else "wakeword"
     if target == "wyoming":
-        from .training import wyoming_readme
+        from .export import wyoming_readme
 
         snippet = wyoming_readme(slug, settings["wake_word"]) + f"\nDirect download of the latest model: {urls['model_url']}\n"
     else:
