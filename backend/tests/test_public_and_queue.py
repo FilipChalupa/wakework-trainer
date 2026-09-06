@@ -69,3 +69,21 @@ def test_monitor_endpoints_and_review_flag(tmp_path):
     assert flagged["review"] is True
     assert client.put(f"/api/recordings/negative/{up['id']}/review", json={"review": False}).json()["review"] is False
     client.delete(f"/api/recordings/negative/{up['id']}")
+
+
+def test_monitor_adopt_all_moves_files():
+    from app import config
+    from app.livetest import monitor_dir
+
+    import numpy as np
+    import soundfile as sf
+
+    project = config.current_project()
+    path = monitor_dir(project) / "20260101_000000_abcdef.wav"
+    sf.write(str(path), np.zeros(16000, dtype=np.int16), 16000, subtype="PCM_16")
+    res = client.post("/api/monitor/adopt-all").json()
+    assert res["moved"] == 1
+    negatives = client.get("/api/recordings?kind=negative").json()["items"]
+    assert any(n["contributor"] == "monitor" for n in negatives)
+    for n in negatives:
+        client.delete(f"/api/recordings/negative/{n['id']}")

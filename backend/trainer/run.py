@@ -411,7 +411,7 @@ def summarize_roc(auc: float | None, points: list[dict]) -> tuple[dict | None, f
     return summary, cutoff
 
 
-def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, probability_cutoff: float) -> None:
+def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, probability_cutoff: float, sliding_window_size: int = 5) -> None:
     manifest = {
         "type": "micro",
         "wake_word": job["wake_word"],
@@ -422,7 +422,7 @@ def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, prob
         "version": 2,
         "micro": {
             "probability_cutoff": probability_cutoff,
-            "sliding_window_size": 5,
+            "sliding_window_size": sliding_window_size,
             "feature_step_size": 10,
             "tensor_arena_size": 30000,
             "minimum_esphome_version": "2024.7.0",
@@ -532,15 +532,17 @@ def run_training_and_export(job: dict, job_dir: Path, features_dir: Path, config
         log(f"Test set ROC: AUC {summary['auc']}; cutoff {summary['cutoff']:.2f} -> FRR {summary['frr'] * 100:.0f} %, FAPH {summary['faph']:.2f}")
     stage("converting", "Converting", "auto_threshold", "Evaluating the model on your recordings to pick the threshold", status="converting")
     auto = auto_threshold(job, job_dir / model_name)
+    window = 5
     if auto:
         cutoff = auto["cutoff"]
-        log(f"Auto threshold {cutoff:.2f}: {auto['positives_passed']}/{auto['positives_total']} positive recordings pass, highest negative {auto['negatives_max']:.2f}")
+        window = int(auto.get("window", 5))
+        log(f"Auto threshold {cutoff:.2f} with sliding window {window}: {auto['positives_passed']}/{auto['positives_total']} positive recordings pass, highest negative {auto['negatives_max']:.2f}")
     summary = dict(summary or {"auc": None, "cutoff": cutoff, "frr": 0.0, "faph": 0.0, "points": []})
     summary["manifest_cutoff"] = cutoff
     summary["auto_threshold"] = auto
     emit("final_metrics", summary=summary)
     log(f"Manifest probability_cutoff set to {cutoff:.2f} (tune it in the JSON manifest if the word triggers too easily / too rarely)")
-    write_manifest(job, job_dir, clip_ms, model_name, cutoff)
+    write_manifest(job, job_dir, clip_ms, model_name, cutoff, window)
     cleanup_job_dir(job_dir, features_dir, train_dir)
     kb = (job_dir / model_name).stat().st_size // 1024
     minutes = round((time.time() - started) / 60, 1)
@@ -559,32 +561,53 @@ def auto_threshold(job: dict, model_path: Path) -> dict | None:
     negatives = sorted(Path(job["negative_dir"]).glob("*.wav"))
     if not positives:
         return None
-    pos_scores, neg_scores = [], []
-    for kind, files, store in (("positive", positives, pos_scores), ("negative", negatives, neg_scores)):
-        for i, path in enumerate(files):
+    pcm = {}
+    for path in positives + negatives:
+        try:
+            pcm[path] = _load_pcm16(path)
+        except Exception as exc:  # noqa: BLE001
+            log(f"Auto threshold: could not read {path.name}: {exc}")
+    windows = (3, 5, 7)
+    candidates = []
+    total = len(pcm) * len(windows)
+    done = 0
+    for window in windows:
+        pos_scores, neg_scores = [], []
+        for path, data in pcm.items():
             try:
-                store.append(evaluate_clip(model_path, _load_pcm16(path), cutoff=0.5, window=5)["max_probability"])
+                score = evaluate_clip(model_path, data, cutoff=0.5, window=window)["max_probability"]
+                (pos_scores if path in positives else neg_scores).append(score)
             except Exception as exc:  # noqa: BLE001
                 log(f"Auto threshold: could not evaluate {path.name}: {exc}")
-            if i % 10 == 0:
-                emit("progress", current=i + 1, total=len(files))
-    if not pos_scores:
+            done += 1
+            if done % 10 == 0:
+                emit("progress", current=done, total=total)
+        if not pos_scores:
+            continue
+        pos_sorted = sorted(pos_scores)
+        p05 = pos_sorted[int(0.05 * (len(pos_sorted) - 1))]
+        neg_max = max(neg_scores) if neg_scores else 0.0
+        cutoff = min(p05 - 0.05, 0.97)
+        cutoff = max(cutoff, neg_max + 0.05)
+        cutoff = float(min(0.97, max(0.5, round(cutoff, 2))))
+        candidates.append({
+            "window": window,
+            "margin": round(p05 - neg_max, 3),
+            "cutoff": cutoff,
+            "positives_total": len(pos_scores),
+            "positives_passed": sum(1 for v in pos_scores if v >= cutoff),
+            "positives_p05": round(p05, 3),
+            "negatives_total": len(neg_scores),
+            "negatives_max": round(neg_max, 3),
+            "negatives_triggered": sum(1 for v in neg_scores if v >= cutoff),
+        })
+    if not candidates:
         return None
-    pos_sorted = sorted(pos_scores)
-    p05 = pos_sorted[int(0.05 * (len(pos_sorted) - 1))]
-    neg_max = max(neg_scores) if neg_scores else 0.0
-    cutoff = min(p05 - 0.05, 0.97)
-    cutoff = max(cutoff, neg_max + 0.05)
-    cutoff = float(min(0.97, max(0.5, round(cutoff, 2))))
-    return {
-        "cutoff": cutoff,
-        "positives_total": len(pos_scores),
-        "positives_passed": sum(1 for v in pos_scores if v >= cutoff),
-        "positives_p05": round(p05, 3),
-        "negatives_total": len(neg_scores),
-        "negatives_max": round(neg_max, 3),
-        "negatives_triggered": sum(1 for v in neg_scores if v >= cutoff),
-    }
+    # best separation between wake word recordings and negatives; ties go to the ESPHome default window (5)
+    best = max(candidates, key=lambda c: (c["positives_passed"] - c["negatives_triggered"], c["margin"], c["window"] == 5))
+    best["candidates"] = candidates
+    log("Window tuning: " + "; ".join(f"w={c['window']}: margin {c['margin']:+.2f}, cutoff {c['cutoff']:.2f}" for c in candidates))
+    return best
 
 
 def cleanup_job_dir(job_dir: Path, features_dir: Path, train_dir: Path) -> None:

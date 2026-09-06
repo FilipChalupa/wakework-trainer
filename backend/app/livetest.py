@@ -342,6 +342,18 @@ def monitor_to_negative(name: str):
     return describe("negative", dst)
 
 
+@router.post("/monitor/adopt-all")
+def monitor_adopt_all():
+    """Moves every saved activation into the negative samples (used by "retrain with monitor negatives")."""
+    project = current_project()
+    folder = monitor_dir(project)
+    moved = 0
+    for src in sorted(folder.glob("*.wav")):
+        src.rename(project.negative_dir / f"{src.name[:-4]}__monitor.wav")
+        moved += 1
+    return {"moved": moved}
+
+
 @router.delete("/monitor/{name}")
 def delete_monitor(name: str):
     if not SAFE_NAME.match(name):

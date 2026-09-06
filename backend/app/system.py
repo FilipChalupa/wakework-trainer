@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import time
@@ -16,6 +17,44 @@ from .config import DATA_DIR
 router = APIRouter(prefix="/api", tags=["system"])
 LAST_DEVICE_FILE = DATA_DIR / "last_training_device.json"
 _cache: dict[str, Any] = {"at": 0.0, "value": None}
+_update_cache: dict[str, Any] = {"at": 0.0, "value": None}
+REPO = os.environ.get("GITHUB_REPO", "FilipChalupa/wakework-trainer")
+
+
+def app_version() -> str:
+    env = os.environ.get("APP_VERSION", "").strip()
+    if env:
+        return env
+    for candidate in (Path(__file__).resolve().parent.parent / "VERSION", Path(__file__).resolve().parent.parent.parent / "VERSION"):
+        if candidate.is_file():
+            return candidate.read_text().strip()
+    return "dev"
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    out = []
+    for piece in text.lstrip("v").split("."):
+        digits = "".join(ch for ch in piece if ch.isdigit())
+        out.append(int(digits) if digits else 0)
+    return tuple(out[:3])
+
+
+def latest_release() -> dict[str, Any] | None:
+    """Newest tag on GitHub (cached for 6 hours; failures are silent – offline installs are fine)."""
+    now = time.time()
+    if now - _update_cache["at"] < 6 * 3600:
+        return _update_cache["value"]
+    _update_cache["at"] = now
+    try:
+        import requests
+
+        res = requests.get(f"https://api.github.com/repos/{REPO}/tags?per_page=5", timeout=5, headers={"Accept": "application/vnd.github+json"})
+        tags = [t["name"] for t in res.json()] if res.ok else []
+        versions = sorted((t for t in tags if _version_tuple(t) > (0,)), key=_version_tuple, reverse=True)
+        _update_cache["value"] = {"latest": versions[0], "url": f"https://github.com/{REPO}/releases"} if versions else None
+    except Exception:  # noqa: BLE001
+        _update_cache["value"] = None
+    return _update_cache["value"]
 
 
 def _nvidia_smi() -> dict[str, Any] | None:
@@ -65,7 +104,13 @@ def system_info() -> dict[str, Any]:
             last = json.loads(LAST_DEVICE_FILE.read_text())
         except json.JSONDecodeError:
             last = {}
+    current = app_version()
+    release = latest_release()
     value = {
+        "version": current,
+        "latest_version": release["latest"] if release else None,
+        "update_available": bool(release and _version_tuple(release["latest"]) > _version_tuple(current)),
+        "releases_url": release["url"] if release else f"https://github.com/{REPO}",
         "gpu": gpu,
         "gpu_available": gpu is not None,
         "tensorflow_cuda": _tensorflow_cuda(),

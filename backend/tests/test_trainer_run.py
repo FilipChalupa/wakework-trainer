@@ -53,3 +53,25 @@ def test_datasets_registry_and_converter(tmp_path):
     data, sr = sf.read(str(src))
     assert sr == 16000 and abs(len(data) - 16000) < 100
     assert not (tmp_path / "meta.csv").exists()
+
+
+def test_version_and_update_check(monkeypatch):
+    from app import system
+
+    monkeypatch.setenv("APP_VERSION", "1.1.0")
+    assert system.app_version() == "1.1.0"
+    system._update_cache.update(at=0.0, value=None)
+
+    class R:
+        ok = True
+
+        @staticmethod
+        def json():
+            return [{"name": "v1.0.0"}, {"name": "v1.2.0"}, {"name": "junk"}]
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", lambda *a, **k: R())
+    system._cache.update(at=0.0, value=None)
+    info = system.system_info()
+    assert info["version"] == "1.1.0" and info["latest_version"] == "v1.2.0" and info["update_available"] is True
