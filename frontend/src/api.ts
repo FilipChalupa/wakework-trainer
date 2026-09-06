@@ -17,7 +17,7 @@ export type Project = {
   id: string;
   name: string;
   wake_word: string;
-  sample_duration_s: number;
+  max_record_seconds: number;
   training: TrainingParams;
   share_token: string | null;
   contributor_target: number;
@@ -53,7 +53,7 @@ export type ProjectSummary = {
   shared: boolean;
 };
 
-export type ContributeInfo = { project: string; wake_word: string; sample_duration_s: number; positive_count: number; contributor_target: number; tags: string[] };
+export type ContributeInfo = { project: string; wake_word: string; max_record_seconds: number; positive_count: number; contributor_target: number; tags: string[] };
 
 export type QualityIssue = "cut_start" | "cut_end" | "too_short" | "silent" | "clipping" | "too_quiet" | "unreadable";
 

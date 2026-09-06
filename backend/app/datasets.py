@@ -275,7 +275,7 @@ def download(name: str, progress: Callable[[dict], None] | None = None) -> None:
 
 def start_download(name: str) -> dict[str, Any]:
     if name not in DATASETS:
-        raise HTTPException(404, "Unknown dataset")
+        raise HTTPException(404, {"code": "not_found", "message": "Unknown dataset"})
     with _lock:
         current = _downloads.get(name)
         if current and current.get("state") in ("downloading", "extracting", "converting"):
@@ -304,7 +304,7 @@ def post_download(name: str):
 @router.delete("/{name}")
 def delete_dataset(name: str):
     if name not in DATASETS:
-        raise HTTPException(404, "Unknown dataset")
+        raise HTTPException(404, {"code": "not_found", "message": "Unknown dataset"})
     path = dataset_path(name)
     if path.exists():
         shutil.rmtree(path)

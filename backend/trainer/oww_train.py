@@ -115,7 +115,22 @@ def _embed_generator(feats: OwwFeatures, generator, expected: int, label: str, t
     return arr
 
 
-def _cached(cache_dir: Path, name: str, builder) -> np.ndarray:
+def _files_digest(paths: list[Path]) -> str:
+    """Short hash of the file list (names + sizes) so a re-downloaded dataset invalidates the feature cache."""
+    import hashlib
+
+    h = hashlib.sha1()
+    for p in sorted(paths):
+        try:
+            h.update(f"{p.name}:{p.stat().st_size}".encode())
+        except OSError:
+            continue
+    return h.hexdigest()[:10]
+
+
+def _cached(cache_dir: Path, name: str, builder, source_files: list[Path] | None = None) -> np.ndarray:
+    if source_files:
+        name = f"{name}_{_files_digest(source_files)}"
     path = cache_dir / f"{name}.npy"
     if path.exists():
         return np.load(path, mmap_mode="r")
@@ -184,7 +199,7 @@ def run_wyoming(job: dict, job_dir: Path, features_dir: Path, started: float, no
         return _embed_generator(feats, gen(), composites, "oww negatives/speech", take="last", log=log, emit=emit)
 
     if speech:
-        negatives.append(("speech", _cached(cache_dir, "speech_commands", speech_builder)))
+        negatives.append(("speech", _cached(cache_dir, "speech_commands", speech_builder, speech)))
 
     for name, folder, step in (("esc50", datasets_dir / "esc50", 12), ("fma", datasets_dir / "fma_16k", 16)):
         wavs = sorted(folder.rglob("*.wav")) if folder.is_dir() else []
@@ -200,7 +215,7 @@ def run_wyoming(job: dict, job_dir: Path, features_dir: Path, started: float, no
 
             return _embed_generator(feats, gen(), len(wavs), f"oww negatives/{name}", take="all", step=step, log=log, emit=emit)
 
-        negatives.append((name, _cached(cache_dir, name, builder)))
+        negatives.append((name, _cached(cache_dir, name, builder, wavs)))
 
     # per-project negatives: synthetic noise crops + the user's negative recordings
     user_negatives = sorted(Path(job["negative_dir"]).glob("*.wav"))

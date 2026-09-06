@@ -31,7 +31,7 @@ def test_create_select_delete_project():
     res = client.post("/api/projects", json={"name": "Hey Jarvis", "wake_word": "hey jarvis"}).json()
     assert res["current"] == "hey_jarvis"
     cfg = client.get("/api/config").json()["project"]
-    assert cfg["wake_word"] == "hey jarvis" and cfg["id"] == "hey_jarvis"
+    assert cfg["wake_word"] == "hey jarvis" and cfg["id"] == "hey_jarvis" and cfg["max_record_seconds"] == 4.0
     other = [p["id"] for p in res["items"] if p["id"] != "hey_jarvis"][0]
     assert client.post(f"/api/projects/{other}/select").json()["current"] == other
     assert "hey_jarvis" not in [p["id"] for p in client.delete("/api/projects/hey_jarvis").json()["items"]]

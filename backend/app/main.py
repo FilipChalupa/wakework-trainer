@@ -65,7 +65,7 @@ def get_config():
 async def put_config(request: Request):
     body = await request.json()
     if not isinstance(body, dict):
-        return JSONResponse({"detail": "Expected object"}, status_code=400)
+        return JSONResponse({"detail": {"code": "bad_request", "message": "Expected a JSON object"}}, status_code=400)
     project = current_project()
     return _config_payload(project, save_settings(project, body))
 

@@ -32,7 +32,7 @@ def info(token: str = Query(...)):
     return {
         "project": settings["name"],
         "wake_word": settings["wake_word"],
-        "sample_duration_s": settings["sample_duration_s"],
+        "max_record_seconds": settings["max_record_seconds"],
         "positive_count": positives,
         "contributor_target": int(settings.get("contributor_target") or 10),
         "tags": list(recordings.TAGS),

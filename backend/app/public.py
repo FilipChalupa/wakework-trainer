@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
@@ -94,7 +93,7 @@ def get_public_urls(pid: str, request: Request):
     try:
         project = get_project(pid)
     except KeyError:
-        raise HTTPException(404, "Project not found") from None
+        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
     settings = load_settings(project)
     urls = public_urls(request, project)
     job = latest_done_job(project)
@@ -122,11 +121,11 @@ def public_manifest(token: str, request: Request):
     project = _project(token)
     job = latest_done_job(project)
     if not job:
-        raise HTTPException(404, "No trained model yet")
+        raise HTTPException(404, {"code": "no_models", "message": "No trained model yet"})
     job_dir = project.jobs_dir / job["job_id"]
     manifest_path = job_dir / f"{job['slug']}.json"
     if job.get("target") == "wyoming" or not manifest_path.exists():
-        raise HTTPException(404, "The latest model is an openWakeWord (Wyoming) model – it has no ESPHome manifest; download model.tflite instead")
+        raise HTTPException(404, {"code": "no_manifest", "message": "The latest model is an openWakeWord (Wyoming) model – it has no ESPHome manifest; download model.tflite instead"})
     manifest = json.loads(manifest_path.read_text())
     manifest["model"] = f"{public_base(request)}/api/public/{token}/model.tflite"
     return JSONResponse(manifest, headers={"Cache-Control": "no-cache"})
@@ -137,7 +136,7 @@ def public_model(token: str):
     project = _project(token)
     job = latest_done_job(project)
     if not job:
-        raise HTTPException(404, "No trained model yet")
+        raise HTTPException(404, {"code": "no_models", "message": "No trained model yet"})
     path = project.jobs_dir / job["job_id"] / f"{job['slug']}.tflite"
     return FileResponse(path, media_type="application/octet-stream", filename=path.name, headers={"Cache-Control": "no-cache"})
 
@@ -209,5 +208,3 @@ def bundle(request: Request, projects: str = ""):
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="wake-words-bundle.zip"'})
 
-
-_ = time  # keep import for potential future rate limiting

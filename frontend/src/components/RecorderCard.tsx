@@ -42,7 +42,8 @@ const RECOMMENDED = 30;
 
 type Props = {
   wakeWord: string;
-  durationS: number;
+  /** hard limit for one recording; it normally stops by itself after the word */
+  maxSeconds: number;
   disabled: boolean;
   onCountsChange: (counts: Record<Kind, number>) => void;
   onError: (message: string) => void;
@@ -55,7 +56,7 @@ type Props = {
 
 type Phase = "idle" | "prepare" | "countdown" | "recording" | "uploading";
 
-export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, onError, client = api, compact = false, title }: Props) {
+export function RecorderCard({ wakeWord, maxSeconds, disabled, onCountsChange, onError, client = api, compact = false, title }: Props) {
   const theme = useTheme();
   const { t } = useI18n();
   const fail = useCallback((e: unknown) => onError(e instanceof Error && e.message === "mic_unsupported" ? t("rec.micUnsupported") : errorText(t, e)), [onError, t]);
@@ -184,7 +185,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setPhase("recording");
       setElapsed(0);
       const { wav, samples } = await recorderRef.current.record(
-        durationS,
+        maxSeconds,
         ({ rms, elapsed }) => {
           setLevel(Math.min(1, rms * 6));
           setElapsed(elapsed);
@@ -199,7 +200,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       await refresh();
       return saved;
     },
-    [deviceId, devices.length, durationS, refresh, client, tag],
+    [deviceId, devices.length, maxSeconds, refresh, client, tag],
   );
 
   const recordSingle = useCallback(async () => {
@@ -393,7 +394,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
             <Box sx={{ position: "relative", display: "inline-flex", "& .MuiIconButton-root": { width: { xs: 160, sm: 120 }, height: { xs: 160, sm: 120 } }, "& > .MuiCircularProgress-root": { width: { xs: "160px !important", sm: "120px !important" }, height: { xs: "160px !important", sm: "120px !important" } } }}>
               <CircularProgress
                 variant="determinate"
-                value={phase === "recording" ? (elapsed / durationS) * 100 : 0}
+                value={phase === "recording" ? (elapsed / maxSeconds) * 100 : 0}
                 size={120}
                 thickness={3}
                 sx={{ color: phase === "recording" ? theme.palette.error.main : theme.palette.divider, position: "absolute", inset: 0 }}
@@ -426,7 +427,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                 {phase === "uploading" && t("rec.uploading")}
               </Typography>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                {series ? t("rec.seriesStatus", { done: series.done, total: series.total }) : t("rec.instructions", { s: durationS.toFixed(0) })}
+                {series ? t("rec.seriesStatus", { done: series.done, total: series.total }) : t("rec.instructions", { s: maxSeconds.toFixed(0) })}
               </Typography>
               <LinearProgress variant="determinate" value={level * 100} color={level > 0.9 ? "error" : "success"} sx={{ height: 10, borderRadius: 5, mb: 1 }} />
               {lastPeaks && <Waveform peaks={lastPeaks} color={theme.palette.primary.main} height={40} />}

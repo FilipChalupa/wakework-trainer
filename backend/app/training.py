@@ -44,9 +44,6 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 RE_MINIBATCH = re.compile(
     r"Validation Batch #(\d+): Accuracy = ([\d.]+); Recall = ([\d.]+); Precision = ([\d.]+); Loss = ([\d.]+); Mini-Batch #(\d+)"
 )
-RE_TRAIN_STEP = re.compile(
-    r"Step #(\d+): rate ([\d.e+-]+), accuracy ([\d.]+)%, recall ([\d.]+)%, precision ([\d.]+)%, cross entropy ([\d.e+-]+)"
-)
 RE_VALIDATION = re.compile(
     r"Step (\d+) \(nonstreaming\): Validation: recall at no faph = ([\d.]+) with cutoff ([\d.]+), "
     r"accuracy = ([\d.]+)%, recall = ([\d.]+)%, precision = ([\d.]+)%, ambient false positives = (\d+), "
@@ -102,12 +99,12 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def find_job_dir(job_id: str) -> Path:
     if not re.match(r"^[A-Za-z0-9_\-]+$", job_id or ""):
-        raise HTTPException(400, "Bad job id")
+        raise HTTPException(400, {"code": "bad_id", "message": "Bad job id"})
     for entry in list_projects():
         candidate = PROJECTS_DIR / entry["id"] / "jobs" / job_id
         if candidate.is_dir():
             return candidate
-    raise HTTPException(404, "Job not found")
+    raise HTTPException(404, {"code": "not_found", "message": "Job not found"})
 
 
 def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | None:
@@ -401,7 +398,7 @@ class JobManager:
             raise HTTPException(409, {"code": "nothing_to_resume", "message": "No interrupted training run to resume"})
         job = _read_json(find_job_dir(job_id) / "job.json")
         if not job:
-            raise HTTPException(404, "Job not found")
+            raise HTTPException(404, {"code": "not_found", "message": "Job not found"})
         self._launch(job, resume=True)
         return self.snapshot()
 
@@ -723,7 +720,7 @@ def latest_model():
     for job in list_jobs(current_project()):
         if job["status"] == "done" and job["model_url"]:
             return job_model(job["job_id"])
-    raise HTTPException(404, "No trained model yet")
+    raise HTTPException(404, {"code": "no_models", "message": "No trained model yet"})
 
 
 @router.get("/jobs")
@@ -736,7 +733,7 @@ def _job_file(job_id: str, suffix: str) -> tuple[Path, dict[str, Any]]:
     job = _read_json(job_dir / "job.json")
     path = job_dir / f"{job.get('slug', 'wakeword')}{suffix}"
     if not path.exists():
-        raise HTTPException(404, "File not found")
+        raise HTTPException(404, {"code": "not_found", "message": "File not found"})
     return path, job
 
 
@@ -756,7 +753,7 @@ def job_manifest(job_id: str):
 def job_log(job_id: str):
     log = find_job_dir(job_id) / "train.log"
     if not log.exists():
-        raise HTTPException(404, "Log not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Log not found"})
     return FileResponse(log, media_type="text/plain")
 
 
@@ -869,7 +866,7 @@ def post_select(pid: str):
     try:
         project = select_project(pid)
     except KeyError:
-        raise HTTPException(404, "Project not found") from None
+        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
     manager.load_project_state(project)
     return {"items": list_projects(), "current": project.id}
 
@@ -884,7 +881,7 @@ def delete_project_route(pid: str):
         get_project(pid)
         delete_project(pid)
     except KeyError:
-        raise HTTPException(404, "Project not found") from None
+        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
     manager.load_project_state(current_project())
     return {"items": list_projects(), "current": current_project().id}
 
@@ -898,7 +895,7 @@ def export_project(pid: str):
     try:
         project = get_project(pid)
     except KeyError:
-        raise HTTPException(404, "Project not found") from None
+        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
     settings = load_settings(project)
     settings["share_token"] = None
     buffer = io.BytesIO()
@@ -959,7 +956,7 @@ async def import_project(file: UploadFile = File(...)):
         })
         job_file.write_text(json.dumps(job, indent=2, ensure_ascii=False))
     merged = load_settings(project)
-    for key in ("wake_word", "sample_duration_s", "contributor_target", "webhook_url"):
+    for key in ("wake_word", "max_record_seconds", "contributor_target", "webhook_url"):
         if key in settings:
             merged[key] = settings[key]
     merged["training"].update(settings.get("training", {}))
@@ -977,6 +974,6 @@ async def post_share(pid: str, body: dict[str, Any]):
     try:
         project = get_project(pid)
     except KeyError:
-        raise HTTPException(404, "Project not found") from None
+        raise HTTPException(404, {"code": "not_found", "message": "Project not found"}) from None
     token = set_share_token(project, bool(body.get("enabled", True)))
     return {"share_token": token}

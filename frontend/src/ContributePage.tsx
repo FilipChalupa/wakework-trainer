@@ -89,7 +89,7 @@ export function ContributePage() {
               </Alert>
               <RecorderCard
                 wakeWord={info.wake_word}
-                durationS={info.sample_duration_s}
+                maxSeconds={info.max_record_seconds}
                 disabled={false}
                 client={client}
                 compact

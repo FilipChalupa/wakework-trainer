@@ -165,7 +165,7 @@ export class Recorder {
     }
 
     const resampled = await resample(merged, context.sampleRate, TARGET_SAMPLE_RATE);
-    return { wav: encodeWav(resampled, TARGET_SAMPLE_RATE), samples: resampled, sampleRate: TARGET_SAMPLE_RATE, speech: speechSeen } as { wav: Blob; samples: Float32Array; sampleRate: number };
+    return { wav: encodeWav(resampled, TARGET_SAMPLE_RATE), samples: resampled, sampleRate: TARGET_SAMPLE_RATE };
   }
 
   /**

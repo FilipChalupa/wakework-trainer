@@ -94,7 +94,7 @@ def _default_settings(name: str, wake_word: str) -> dict[str, Any]:
     return {
         "name": name,
         "wake_word": wake_word,
-        "sample_duration_s": 4.0,  # maximum recording length; recordings stop automatically after the word
+        "max_record_seconds": 4.0,  # recordings stop automatically after the word; this is the hard limit
         "training": dict(DEFAULT_TRAINING),
         "share_token": None,
         "model_token": None,
@@ -115,8 +115,9 @@ def load_settings(project: Project) -> dict[str, Any]:
     settings = _default_settings(project.id, stored.get("wake_word", project.id))
     settings.update({k: v for k, v in stored.items() if k != "training"})
     settings["training"].update(stored.get("training", {}))
-    if float(settings.get("sample_duration_s") or 0) < 3.0:  # older projects used a fixed 1.5-3 s clip length
-        settings["sample_duration_s"] = 4.0
+    settings.pop("sample_duration_s", None)  # older projects: fixed clip length, replaced by the automatic stop
+    if float(settings.get("max_record_seconds") or 0) < 2.0:
+        settings["max_record_seconds"] = 4.0
     return settings
 
 
@@ -132,8 +133,8 @@ def save_settings(project: Project, update: dict[str, Any]) -> dict[str, Any]:
         settings["wake_word"] = str(update["wake_word"]).strip() or settings["wake_word"]
     if "name" in update:
         settings["name"] = str(update["name"]).strip() or settings["name"]
-    if "sample_duration_s" in update:
-        settings["sample_duration_s"] = float(update["sample_duration_s"])
+    if "max_record_seconds" in update:
+        settings["max_record_seconds"] = float(min(10.0, max(2.0, float(update["max_record_seconds"]))))
     if "contributor_target" in update:
         settings["contributor_target"] = max(1, int(update["contributor_target"] or 10))
     if "webhook_url" in update:
@@ -282,7 +283,7 @@ def migrate_legacy_layout() -> None:
                 shutil.rmtree(dst)
             shutil.move(str(src), str(dst))
     settings = load_settings(project)
-    settings.update({k: v for k, v in stored.items() if k in ("wake_word", "sample_duration_s")})
+    settings.update({k: v for k, v in stored.items() if k in ("wake_word",)})
     settings["training"].update(stored.get("training", {}))
     write_settings(project, settings)
     legacy_file.unlink(missing_ok=True)

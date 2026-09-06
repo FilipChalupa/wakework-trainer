@@ -176,7 +176,7 @@ backend/app        FastAPI (config, recordings, datasets, training + SSE, live t
 backend/trainer    Training pipeline (run.py) and audio helpers
 backend/tests      pytest suite (no TensorFlow needed: `pip install -r backend/requirements-dev.txt && cd backend && pytest`)
 frontend           Vite + React + TypeScript + Material UI
-tests/e2e          Playwright smoke test used in CI against the Docker image
+tests/e2e          Playwright smoke test used in CI against the Docker image, screenshots.js re-creates the README images
 docs/screenshots   README images
 data/              (created at runtime) negative_datasets/, features_cache/, projects/<id>/{positive_samples,negative_samples,jobs}
 ```

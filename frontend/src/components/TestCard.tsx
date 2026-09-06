@@ -26,7 +26,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
   const [jobId, setJobId] = useState<string>("");
   const currentTarget = models.find((m) => m.job_id === jobId)?.target ?? "esphome";
   const [cutoff, setCutoff] = useState(0.97);
-  const [window, setWindow] = useState(5);
+  const [windowSize, setWindowSize] = useState(5);
   const [listening, setListening] = useState<"off" | "connecting" | "on">("off");
   const [prob, setProb] = useState(0);
   const [avg, setAvg] = useState(0);
@@ -121,7 +121,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
       .testInfo(jobId)
       .then((info) => {
         setCutoff(info.probability_cutoff);
-        setWindow(info.sliding_window_size);
+        setWindowSize(info.sliding_window_size);
       })
       .catch(() => undefined);
     setEvaluation(null);
@@ -154,7 +154,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
     setElapsed(0);
     try {
       const proto = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${proto}://${location.host}/api/test/ws?job_id=${encodeURIComponent(jobId)}&cutoff=${cutoff}&window=${window}${monitor ? "&save=1" : ""}`);
+      const socket = new WebSocket(`${proto}://${location.host}/api/test/ws?job_id=${encodeURIComponent(jobId)}&cutoff=${cutoff}&window=${windowSize}${monitor ? "&save=1" : ""}`);
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
       socket.onmessage = (event) => {
@@ -185,7 +185,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
             setDetections((d) => [Date.now(), ...d].slice(0, 10));
             setFlash(true);
             if (flashTimer.current) clearTimeout(flashTimer.current);
-            flashTimer.current = window_setTimeout(() => setFlash(false), 900);
+            flashTimer.current = window.setTimeout(() => setFlash(false), 900);
           }
         }
       };
@@ -227,7 +227,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
     if (!jobId) return;
     setEvaluating(true);
     try {
-      setEvaluation(await api.evaluateJob(jobId, cutoff, window));
+      setEvaluation(await api.evaluateJob(jobId, cutoff, windowSize));
       setFlagged(null);
     } catch (e) {
       onError(errorText(t, e));
@@ -261,7 +261,7 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
                 <Slider size="small" min={0.3} max={0.99} step={0.01} value={cutoff} onChange={(_, v) => setCutoff(v as number)} disabled={active} />
               </Box>
               <FormControlLabel control={<Switch checked={monitor} onChange={(e) => setMonitor(e.target.checked)} disabled={active} />} label={<Typography variant="body2">{t("monitor.switch")}</Typography>} />
-              <TextField select size="small" label={currentTarget === "wyoming" ? t("test.trigger") : t("test.window")} value={window} onChange={(e) => setWindow(Number(e.target.value))} sx={{ minWidth: 170 }} disabled={active}>
+              <TextField select size="small" label={currentTarget === "wyoming" ? t("test.trigger") : t("test.window")} value={windowSize} onChange={(e) => setWindowSize(Number(e.target.value))} sx={{ minWidth: 170 }} disabled={active}>
                 {(currentTarget === "wyoming" ? [1, 2, 3] : [1, 3, 5, 7, 10]).map((n) => (
                   <MenuItem key={n} value={n}>
                     {n}
@@ -463,10 +463,6 @@ export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
       </CardContent>
     </Card>
   );
-}
-
-function window_setTimeout(fn: () => void, ms: number): number {
-  return globalThis.setTimeout(fn, ms) as unknown as number;
 }
 
 function Sparkline({ values, cutoff, color, cutoffColor }: { values: number[]; cutoff: number; color: string; cutoffColor: string }) {

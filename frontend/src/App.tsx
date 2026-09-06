@@ -141,7 +141,7 @@ function Main() {
       <Container maxWidth="md" sx={{ py: 3 }}>
         <Stack spacing={3}>
           {tab === "data" && project && defaults && <ConfigCard project={project} defaults={defaults} disabled={running} onSaved={setProject} onError={showError} />}
-          {tab === "data" && project && <RecorderCard key={project.id} wakeWord={project.wake_word} durationS={project.sample_duration_s} disabled={running} onCountsChange={setCounts} onError={showError} />}
+          {tab === "data" && project && <RecorderCard key={project.id} wakeWord={project.wake_word} maxSeconds={project.max_record_seconds} disabled={running} onCountsChange={setCounts} onError={showError} />}
           {tab === "data" && <DatasetsCard disabled={running} onError={showError} />}
           {tab === "train" && <TrainingCard state={state} log={log} connected={connected} positiveCount={counts.positive} wakeWord={project?.wake_word ?? ""} target={project?.training.target} onError={showError} onFinished={loadJobs} />}
           {tab === "train" && <JobsCard jobs={jobs} disabled={running} onChanged={loadJobs} onError={showError} />}

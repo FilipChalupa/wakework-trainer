@@ -201,7 +201,7 @@ def _model_for_job(job_id: str) -> tuple[Path, dict[str, Any]]:
     job = json.loads((job_dir / "job.json").read_text())
     model = job_dir / f"{job['slug']}.tflite"
     if not model.exists():
-        raise HTTPException(404, "Model not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Model not found"})
     manifest_path = job_dir / f"{job['slug']}.json"
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
     return model, manifest
@@ -397,10 +397,10 @@ def list_monitor():
 @router.get("/monitor/audio/{name}")
 def monitor_audio(name: str):
     if not SAFE_NAME.match(name):
-        raise HTTPException(400, "Bad name")
+        raise HTTPException(400, {"code": "bad_id", "message": "Bad name"})
     path = monitor_dir(current_project()) / name
     if not path.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Not found"})
     from fastapi.responses import FileResponse
 
     return FileResponse(path, media_type="audio/wav", filename=name)
@@ -412,11 +412,11 @@ def monitor_to_negative(name: str):
     from .recordings import describe, set_tag
 
     if not SAFE_NAME.match(name):
-        raise HTTPException(400, "Bad name")
+        raise HTTPException(400, {"code": "bad_id", "message": "Bad name"})
     project = current_project()
     src = monitor_dir(project) / name
     if not src.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Not found"})
     dst = project.negative_dir / f"{name[:-4]}__monitor.wav"
     src.rename(dst)
     return describe("negative", dst)
@@ -437,7 +437,7 @@ def monitor_adopt_all():
 @router.delete("/monitor/{name}")
 def delete_monitor(name: str):
     if not SAFE_NAME.match(name):
-        raise HTTPException(400, "Bad name")
+        raise HTTPException(400, {"code": "bad_id", "message": "Bad name"})
     path = monitor_dir(current_project()) / name
     if path.exists():
         path.unlink()

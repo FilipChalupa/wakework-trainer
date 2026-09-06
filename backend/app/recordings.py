@@ -31,7 +31,7 @@ _cache_lock = threading.Lock()
 
 def _dir(kind: str, project: Project) -> Path:
     if kind not in KINDS:
-        raise HTTPException(400, f"Unknown kind '{kind}'")
+        raise HTTPException(400, {"code": "bad_kind", "message": f"Unknown kind '{kind}'"})
     return project.ensure().sample_dir(kind)
 
 
@@ -194,22 +194,22 @@ def contributors(project: Project) -> list[dict]:
 
 def check_id(rec_id: str) -> None:
     if not SAFE_ID.match(rec_id):
-        raise HTTPException(400, "Bad id")
+        raise HTTPException(400, {"code": "bad_id", "message": "Bad recording id"})
 
 
 async def store_upload(file: UploadFile, kind: str, project: Project, contributor: str | None = None, url_prefix: str = "/api/recordings", tag: str | None = None) -> dict:
     target_dir = _dir(kind, project)
     raw = await file.read()
     if not raw:
-        raise HTTPException(400, "Empty upload")
+        raise HTTPException(400, {"code": "empty_upload", "message": "Empty upload"})
     try:
         wav, duration = normalize_wav(raw)
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(400, f"Could not decode audio: {exc}") from exc
+        raise HTTPException(400, {"code": "bad_audio", "message": f"Could not decode audio: {exc}"}) from exc
     if duration < 0.3:
-        raise HTTPException(400, "Recording is too short")
+        raise HTTPException(400, {"code": "too_short", "message": "Recording is too short"})
     if duration > 15:
-        raise HTTPException(400, "Recording is too long (max 15 s)")
+        raise HTTPException(400, {"code": "too_long", "message": "Recording is too long (max 15 s)"})
     wav, duration = trim_edges(wav)
     if duration < 0.3:
         raise HTTPException(400, {"code": "silent_recording", "message": "No speech detected in the recording"})
@@ -226,7 +226,7 @@ def soft_delete(kind: str, rec_id: str, project: Project) -> None:
     check_id(rec_id)
     path = _dir(kind, project) / rec_id
     if not path.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Recording not found"})
     trash = _trash(kind, project)
     path.rename(trash / rec_id)
     old = sorted(trash.glob("*.wav"), key=lambda p: p.stat().st_mtime)
@@ -238,7 +238,7 @@ def restore(kind: str, rec_id: str, project: Project, url_prefix: str = "/api/re
     check_id(rec_id)
     src = _trash(kind, project) / rec_id
     if not src.exists():
-        raise HTTPException(404, "Not in trash")
+        raise HTTPException(404, {"code": "not_found", "message": "Recording is not in the trash"})
     dst = _dir(kind, project) / rec_id
     src.rename(dst)
     return describe(kind, dst, url_prefix, read_meta(kind, project))
@@ -248,7 +248,7 @@ def file_response(kind: str, rec_id: str, project: Project) -> FileResponse:
     check_id(rec_id)
     path = _dir(kind, project) / rec_id
     if not path.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Recording not found"})
     return FileResponse(path, media_type="audio/wav", filename=rec_id)
 
 
@@ -281,7 +281,7 @@ async def put_review(kind: str, rec_id: str, body: dict):
     project = current_project()
     path = _dir(kind, project) / rec_id
     if not path.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Recording not found"})
     set_review(kind, rec_id, bool(body.get("review")), project)
     return describe(kind, path, meta=read_meta(kind, project))
 
@@ -293,7 +293,7 @@ async def put_tag(kind: str, rec_id: str, body: dict):
     set_tag(kind, rec_id, body.get("tag") or None, project)
     path = _dir(kind, project) / rec_id
     if not path.exists():
-        raise HTTPException(404, "Not found")
+        raise HTTPException(404, {"code": "not_found", "message": "Recording not found"})
     return describe(kind, path, meta=read_meta(kind, project))
 
 
