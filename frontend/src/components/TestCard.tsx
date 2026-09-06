@@ -5,7 +5,7 @@ import StopIcon from "@mui/icons-material/Stop";
 import FactCheckIcon from "@mui/icons-material/FactCheck";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import { api, type Evaluation, type Job } from "../api";
-import { errorText, useI18n } from "../i18n";
+import { errorText, useI18n, type TKey } from "../i18n";
 import { Recorder } from "../lib/recorder";
 
 type Props = { jobs: Job[]; wakeWord: string; disabled: boolean; onError: (message: string) => void };
@@ -252,6 +252,16 @@ export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
                     cutoff: evaluation.cutoff.toFixed(2),
                   })}
                 </Typography>
+                {Object.keys(evaluation.summary.by_tag ?? {}).length > 1 && (
+                  <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mb: 1 }} alignItems="center">
+                    <Typography variant="caption" color="text.secondary">
+                      {t("test.byTag")}:
+                    </Typography>
+                    {Object.entries(evaluation.summary.by_tag).map(([tg, v]) => (
+                      <Chip key={tg} size="small" variant="outlined" color={v.detected === v.total ? "success" : v.detected === 0 ? "error" : "warning"} label={`${t(`tag.${tg}` as TKey)}: ${v.detected} / ${v.total}`} />
+                    ))}
+                  </Stack>
+                )}
                 <Box sx={{ maxHeight: 320, overflow: "auto" }}>
                   <Table size="small" stickyHeader>
                     <TableHead>
@@ -274,7 +284,10 @@ export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
                                 {item.id}
                               </Typography>
                             </TableCell>
-                            <TableCell>{t(item.kind === "positive" ? "test.kind.positive" : "test.kind.negative")}</TableCell>
+                            <TableCell>
+                              {t(item.kind === "positive" ? "test.kind.positive" : "test.kind.negative")}
+                              {item.tag && item.tag !== "normal" ? ` · ${t(`tag.${item.tag}` as TKey)}` : ""}
+                            </TableCell>
                             <TableCell sx={{ minWidth: 160 }}>
                               <Stack direction="row" spacing={1} alignItems="center">
                                 <LinearProgress variant="determinate" value={p * 100} sx={{ flex: 1, height: 8, borderRadius: 4 }} color={p >= evaluation.cutoff ? "success" : "inherit"} />

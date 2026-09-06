@@ -17,8 +17,22 @@ export type Project = {
   sample_duration_s: number;
   training: TrainingParams;
   share_token: string | null;
+  contributor_target: number;
+  webhook_url: string;
   created_at?: string;
 };
+
+export type SystemInfo = {
+  gpu: null | { name: string; memory_total_mb: number; memory_used_mb: number; driver: string; utilization: number | null };
+  gpu_available: boolean;
+  tensorflow_cuda: boolean;
+  cpu_count: number | null;
+  last_training: null | { gpu: boolean; devices: string[]; tensorflow: string; at: string; job_id: string };
+};
+
+export type Contributor = { name: string; positive: number; negative: number };
+export type Tag = "normal" | "far" | "noisy" | "whisper" | "loud";
+export const TAGS: Tag[] = ["normal", "far", "noisy", "whisper", "loud"];
 
 export type ProjectSummary = {
   id: string;
@@ -32,7 +46,7 @@ export type ProjectSummary = {
   shared: boolean;
 };
 
-export type ContributeInfo = { project: string; wake_word: string; sample_duration_s: number; positive_count: number };
+export type ContributeInfo = { project: string; wake_word: string; sample_duration_s: number; positive_count: number; contributor_target: number; tags: string[] };
 
 export type QualityIssue = "cut_start" | "cut_end" | "too_short" | "silent" | "clipping" | "too_quiet" | "unreadable";
 
@@ -44,6 +58,7 @@ export type Recording = {
   created: string;
   url: string;
   contributor: string | null;
+  tag: Tag | null;
   peaks: number[];
   quality: {
     peak?: number;
@@ -79,7 +94,16 @@ export type ValidationEntry = {
 };
 
 export type RocPoint = { cutoff: number; frr: number; faph: number };
-export type FinalMetrics = { auc: number | null; cutoff: number; frr: number; faph: number; manifest_cutoff: number; points?: RocPoint[] };
+export type AutoThreshold = {
+  cutoff: number;
+  positives_total: number;
+  positives_passed: number;
+  positives_p05: number;
+  negatives_total: number;
+  negatives_max: number;
+  negatives_triggered: number;
+};
+export type FinalMetrics = { auc: number | null; cutoff: number; frr: number; faph: number; manifest_cutoff: number; points?: RocPoint[]; auto_threshold?: AutoThreshold | null };
 
 export type TrainingState = {
   status: "idle" | "downloading" | "preparing" | "training" | "converting" | "done" | "failed" | "cancelled" | "interrupted";
@@ -119,6 +143,7 @@ export type Job = {
   positive_count: number;
   training: TrainingParams;
   final_metrics: FinalMetrics | null;
+  validation_last: ValidationEntry | null;
   model_url: string | null;
   manifest_url: string | null;
   export_url: string | null;
@@ -128,7 +153,7 @@ export type Job = {
 
 export type RecordingsClient = {
   listRecordings: (kind: string) => Promise<{ items: Recording[]; count: number }>;
-  uploadRecording: (kind: string, wav: Blob, filename?: string) => Promise<Recording>;
+  uploadRecording: (kind: string, wav: Blob, filename?: string, tag?: string | null) => Promise<Recording>;
   deleteRecording: (kind: string, id: string) => Promise<{ deleted: string }>;
   restoreRecording: (kind: string, id: string) => Promise<Recording>;
 };
@@ -166,6 +191,8 @@ export type EvaluationItem = {
   id: string;
   kind: "positive" | "negative";
   url: string;
+  tag: Tag | null;
+  contributor: string | null;
   max_probability: number | null;
   detections: number;
   error?: string;
@@ -175,7 +202,13 @@ export type Evaluation = {
   cutoff: number;
   window: number;
   items: EvaluationItem[];
-  summary: { positive_total: number; positive_detected: number; negative_total: number; negative_triggered: number };
+  summary: {
+    positive_total: number;
+    positive_detected: number;
+    negative_total: number;
+    negative_triggered: number;
+    by_tag: Record<string, { total: number; detected: number }>;
+  };
 };
 
 export const api = {
@@ -187,11 +220,22 @@ export const api = {
       body: JSON.stringify(update),
     }),
   listRecordings: (kind: string) => request<{ items: Recording[]; count: number }>(`/api/recordings?kind=${kind}`),
-  uploadRecording: (kind: string, wav: Blob, filename = "sample.wav") => {
+  uploadRecording: (kind: string, wav: Blob, filename = "sample.wav", tag: string | null = null) => {
     const form = new FormData();
     form.append("kind", kind);
+    if (tag) form.append("tag", tag);
     form.append("file", wav, filename);
     return request<Recording>("/api/recordings", { method: "POST", body: form });
+  },
+  setTag: (kind: string, id: string, tag: string | null) =>
+    request<Recording>(`/api/recordings/${kind}/${id}/tag`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tag }) }),
+  contributors: () => request<{ items: Contributor[]; tags: string[] }>("/api/recordings/contributors"),
+  system: () => request<SystemInfo>("/api/system"),
+  exportProjectUrl: (id: string) => `/api/projects/${id}/export`,
+  importProject: (file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return request<{ items: ProjectSummary[]; current: string }>("/api/projects/import", { method: "POST", body: form });
   },
   deleteRecording: (kind: string, id: string) => request<{ deleted: string }>(`/api/recordings/${kind}/${id}`, { method: "DELETE" }),
   restoreRecording: (kind: string, id: string) => request<Recording>(`/api/recordings/${kind}/${id}/restore`, { method: "POST" }),
@@ -230,9 +274,10 @@ export function contributeClient(token: string, name: string): RecordingsClient 
   return {
     info: () => request<ContributeInfo>(`/api/contribute/info?token=${encodeURIComponent(token)}`),
     listRecordings: (kind) => request(`/api/contribute/recordings?${q}&kind=${kind}`),
-    uploadRecording: (kind, wav, filename = "sample.wav") => {
+    uploadRecording: (kind, wav, filename = "sample.wav", tag = null) => {
       const form = new FormData();
       form.append("kind", kind);
+      if (tag) form.append("tag", tag);
       form.append("file", wav, filename);
       return request(`/api/contribute/recordings?${q}`, { method: "POST", body: form });
     },

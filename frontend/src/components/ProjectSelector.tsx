@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import FileDownloadIcon from "@mui/icons-material/FileDownload";
+import FileUploadIcon from "@mui/icons-material/FileUpload";
 import { Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, MenuItem, Select, Stack, TextField, Tooltip, Typography } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import DeleteIcon from "@mui/icons-material/Delete";
@@ -13,7 +15,22 @@ export function ProjectSelector({ projects, current, disabled, onChanged, onErro
   const [name, setName] = useState("");
   const [wakeWord, setWakeWord] = useState("");
   const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const active = projects.find((p) => p.id === current);
+
+  const importFile = async (file: File) => {
+    setImporting(true);
+    try {
+      const res = await api.importProject(file);
+      onChanged(res.items, res.current);
+    } catch (e) {
+      onError(errorText(t, e));
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
 
   const run = async (fn: () => Promise<{ items: ProjectSummary[]; current: string }>) => {
     setBusy(true);
@@ -64,6 +81,21 @@ export function ProjectSelector({ projects, current, disabled, onChanged, onErro
           </IconButton>
         </span>
       </Tooltip>
+      <Tooltip title={t("proj.export")}>
+        <span>
+          <IconButton size="small" component="a" href={active ? api.exportProjectUrl(active.id) : undefined} download disabled={!active || busy}>
+            <FileDownloadIcon />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <Tooltip title={importing ? t("proj.importing") : t("proj.import")}>
+        <span>
+          <IconButton size="small" onClick={() => fileRef.current?.click()} disabled={disabled || busy || importing}>
+            <FileUploadIcon />
+          </IconButton>
+        </span>
+      </Tooltip>
+      <input ref={fileRef} type="file" accept=".zip,application/zip" hidden onChange={(e) => e.target.files?.[0] && importFile(e.target.files[0])} />
       <Tooltip title={t("proj.delete")}>
         <span>
           <IconButton size="small" onClick={remove} disabled={disabled || busy || projects.length < 2}>

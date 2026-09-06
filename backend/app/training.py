@@ -131,6 +131,7 @@ def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | N
         "positive_count": job.get("positive_count"),
         "training": job.get("training"),
         "final_metrics": result.get("final_metrics"),
+        "validation_last": (result.get("validation") or [None])[-1],
         "model_url": f"/api/jobs/{job['job_id']}/model" if model.exists() else None,
         "manifest_url": f"/api/jobs/{job['job_id']}/manifest" if (job_dir / f"{slug}.json").exists() else None,
         "export_url": f"/api/jobs/{job['job_id']}/export" if model.exists() else None,

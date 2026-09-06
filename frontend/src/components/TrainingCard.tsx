@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, Collapse, LinearProgress, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, Collapse, FormControlLabel, LinearProgress, Stack, Switch, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import ModelTrainingIcon from "@mui/icons-material/ModelTraining";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
@@ -35,7 +35,8 @@ const STATUS_COLOR: Record<TrainingState["status"], "default" | "info" | "succes
 };
 
 const STAGE_KEYS = new Set(["checking_datasets", "downloading_dataset", "extracting_dataset", "preparing", "training", "converting", "done", "failed", "cancelled", "interrupted"]);
-const MSG_KEYS = new Set(["init_tf", "augment_positive", "hard_negatives", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready"]);
+const MSG_KEYS = new Set(["init_tf", "augment_positive", "hard_negatives", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready", "auto_threshold"]);
+const NOTIFY_KEY = "wakeword-trainer.notify";
 
 function formatBytes(n: number) {
   if (n > 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GB`;
@@ -49,15 +50,50 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
   const [busy, setBusy] = useState(false);
   const logRef = useRef<HTMLDivElement | null>(null);
   const prevStatus = useRef(state.status);
+  const [notify, setNotify] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(NOTIFY_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleNotify = async (enabled: boolean) => {
+    if (enabled && "Notification" in window && Notification.permission !== "granted") {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") {
+        onError(t("notify.denied"));
+        return;
+      }
+    }
+    setNotify(enabled);
+    try {
+      localStorage.setItem(NOTIFY_KEY, enabled ? "1" : "0");
+    } catch {
+      /* ignore */
+    }
+  };
 
   useEffect(() => {
     if (showLog && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log, showLog]);
 
   useEffect(() => {
-    if (prevStatus.current !== state.status && ["done", "failed", "cancelled"].includes(state.status)) onFinished();
+    if (prevStatus.current !== state.status && ["done", "failed", "cancelled"].includes(state.status)) {
+      onFinished();
+      const wasRunning = ["downloading", "preparing", "training", "converting"].includes(prevStatus.current);
+      if (wasRunning && notify && "Notification" in window && Notification.permission === "granted" && state.status !== "cancelled") {
+        try {
+          new Notification(state.status === "done" ? t("notify.done", { word: state.wake_word ?? wakeWord }) : t("notify.failed", { word: state.wake_word ?? wakeWord }), {
+            body: state.message ?? state.error ?? "",
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     prevStatus.current = state.status;
-  }, [state.status, onFinished]);
+  }, [state.status, onFinished, notify, state.wake_word, state.message, state.error, t, wakeWord]);
 
   const running = ["downloading", "preparing", "training", "converting"].includes(state.status);
 
@@ -142,6 +178,9 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                 {messageText ?? t("train.wakeWord", { word: state.wake_word ?? wakeWord })}
               </Typography>
             </Box>
+            {"Notification" in window && (
+              <FormControlLabel control={<Switch size="small" checked={notify} onChange={(e) => toggleNotify(e.target.checked)} />} label={<Typography variant="caption">{t("notify.label")}</Typography>} />
+            )}
           </Stack>
 
           {(running || state.status === "done") && (
@@ -237,14 +276,30 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
               <Stack spacing={1}>
                 <Typography variant="body2">
                   {t("train.done")}{" "}
-                  {state.final_metrics &&
+                  {state.final_metrics?.auc != null &&
                     t("train.finalMetrics", {
-                      auc: state.final_metrics.auc?.toFixed(3) ?? "–",
+                      auc: state.final_metrics.auc.toFixed(3),
                       cutoff: state.final_metrics.cutoff.toFixed(2),
                       frr: Math.round(state.final_metrics.frr * 100),
                       faph: state.final_metrics.faph.toFixed(2),
                     })}
                 </Typography>
+                {state.final_metrics?.auto_threshold && (
+                  <Typography variant="body2">
+                    {state.final_metrics.auto_threshold.negatives_total > 0
+                      ? t("train.auto", {
+                          cutoff: state.final_metrics.auto_threshold.cutoff.toFixed(2),
+                          passed: state.final_metrics.auto_threshold.positives_passed,
+                          total: state.final_metrics.auto_threshold.positives_total,
+                          neg: state.final_metrics.auto_threshold.negatives_max.toFixed(2),
+                        })
+                      : t("train.autoNoNeg", {
+                          cutoff: state.final_metrics.auto_threshold.cutoff.toFixed(2),
+                          passed: state.final_metrics.auto_threshold.positives_passed,
+                          total: state.final_metrics.auto_threshold.positives_total,
+                        })}
+                  </Typography>
+                )}
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Button variant="contained" startIcon={<DownloadIcon />} href={state.model_url} download>
                     {t("train.downloadModel")}

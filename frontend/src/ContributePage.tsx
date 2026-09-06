@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, AppBar, Box, Button, Card, CardContent, Container, MenuItem, Select, Snackbar, Stack, TextField, Toolbar, Typography } from "@mui/material";
+import { Alert, AppBar, Box, Button, Card, CardContent, Container, LinearProgress, MenuItem, Select, Snackbar, Stack, TextField, Toolbar, Typography } from "@mui/material";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { contributeClient, type ContributeInfo } from "./api";
 import { RecorderCard } from "./components/RecorderCard";
@@ -23,6 +23,7 @@ export function ContributePage() {
   const [invalid, setInvalid] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [count, setCount] = useState<number | null>(null);
+  const target = info?.contributor_target ?? 10;
   const client = useMemo(() => (name ? contributeClient(token, name) : null), [token, name]);
 
   useEffect(() => {
@@ -75,8 +76,16 @@ export function ContributePage() {
           )}
           {info && name && client && (
             <>
-              <Alert severity="info" action={<Button color="inherit" size="small" onClick={() => setName("")}>{t("contrib.change")}</Button>}>
-                {t("contrib.intro", { word: info.wake_word, project: info.project })} {count !== null && t("contrib.thanks", { n: count })}
+              <Alert severity={count !== null && count >= target ? "success" : "info"} action={<Button color="inherit" size="small" onClick={() => setName("")}>{t("contrib.change")}</Button>}>
+                {t("contrib.intro", { word: info.wake_word, project: info.project })}
+                {count !== null && (
+                  <Box sx={{ mt: 1 }}>
+                    <Typography variant="body2" fontWeight={600}>
+                      {t("contrib.progress", { n: count, target })} {count >= target && `· ${t("contrib.done")}`}
+                    </Typography>
+                    <LinearProgress variant="determinate" value={Math.min(100, (count / target) * 100)} sx={{ height: 8, borderRadius: 4, mt: 0.5 }} color={count >= target ? "success" : "primary"} />
+                  </Box>
+                )}
               </Alert>
               <RecorderCard
                 wakeWord={info.wake_word}

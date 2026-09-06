@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, CardHeader, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, CardHeader, Chip, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from "@mui/material";
 import ShareIcon from "@mui/icons-material/Share";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import TuneIcon from "@mui/icons-material/Tune";
 import SaveIcon from "@mui/icons-material/Save";
-import { api, type Project, type TrainingParams } from "../api";
+import QRCode from "qrcode";
+import QrCode2Icon from "@mui/icons-material/QrCode2";
+import { api, type Contributor, type Project, type TrainingParams } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
 
 type Props = {
@@ -32,20 +34,29 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
   const [wakeWord, setWakeWord] = useState(project.wake_word);
   const [duration, setDuration] = useState(project.sample_duration_s);
   const [training, setTraining] = useState<TrainingParams>(project.training);
+  const [webhook, setWebhook] = useState(project.webhook_url ?? "");
+  const [target, setTarget] = useState(project.contributor_target ?? 10);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     setWakeWord(project.wake_word);
     setDuration(project.sample_duration_s);
     setTraining(project.training);
+    setWebhook(project.webhook_url ?? "");
+    setTarget(project.contributor_target ?? 10);
   }, [project]);
 
-  const dirty = wakeWord !== project.wake_word || duration !== project.sample_duration_s || JSON.stringify(training) !== JSON.stringify(project.training);
+  const dirty =
+    wakeWord !== project.wake_word ||
+    duration !== project.sample_duration_s ||
+    webhook !== (project.webhook_url ?? "") ||
+    target !== (project.contributor_target ?? 10) ||
+    JSON.stringify(training) !== JSON.stringify(project.training);
 
   const save = async () => {
     setSaving(true);
     try {
-      const res = await api.saveConfig({ wake_word: wakeWord, sample_duration_s: duration, training });
+      const res = await api.saveConfig({ wake_word: wakeWord, sample_duration_s: duration, training, webhook_url: webhook, contributor_target: target });
       onSaved(res.project);
     } catch (e) {
       onError(errorText(t, e));
@@ -102,7 +113,10 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
                   </Box>
                 }
               />
-              <br />
+              <Box sx={{ display: "grid", gap: 2, gridTemplateColumns: { xs: "1fr", sm: "2fr 1fr" }, mt: 2 }}>
+                <TextField size="small" label={t("config.webhook")} value={webhook} onChange={(e) => setWebhook(e.target.value)} helperText={t("config.webhookHelp")} disabled={disabled} placeholder="https://homeassistant.local:8123/api/webhook/…" />
+                <TextField size="small" type="number" label={t("config.target")} value={target} onChange={(e) => setTarget(Math.max(1, Number(e.target.value)))} inputProps={{ min: 1 }} disabled={disabled} />
+              </Box>
               <Button size="small" sx={{ mt: 1 }} onClick={() => setTraining({ ...defaults })} disabled={disabled}>
                 {t("config.resetDefaults")}
               </Button>
@@ -130,7 +144,25 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [qr, setQr] = useState<string | null>(null);
+  const [showQr, setShowQr] = useState(false);
+  const [contributors, setContributors] = useState<Contributor[]>([]);
   const link = project.share_token ? `${location.origin}/contribute?token=${project.share_token}` : null;
+
+  useEffect(() => {
+    if (!link) {
+      setQr(null);
+      return;
+    }
+    QRCode.toDataURL(link, { width: 220, margin: 1 }).then(setQr).catch(() => setQr(null));
+  }, [link]);
+
+  useEffect(() => {
+    const load = () => api.contributors().then((r) => setContributors(r.items)).catch(() => undefined);
+    load();
+    const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [project.id]);
 
   const toggle = async (enabled: boolean) => {
     setBusy(true);
@@ -170,6 +202,9 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
           <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy} sx={{ whiteSpace: "nowrap" }}>
             {copied ? t("share.copied") : t("share.copy")}
           </Button>
+          <Button startIcon={<QrCode2Icon />} onClick={() => setShowQr((v) => !v)} sx={{ whiteSpace: "nowrap" }} disabled={!qr}>
+            {t("share.qr")}
+          </Button>
           <Button color="error" startIcon={<LinkOffIcon />} onClick={() => toggle(false)} disabled={busy} sx={{ whiteSpace: "nowrap" }}>
             {t("share.disable")}
           </Button>
@@ -178,6 +213,27 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
         <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => toggle(true)} disabled={busy}>
           {t("share.enable")}
         </Button>
+      )}
+      {showQr && qr && link && (
+        <Box sx={{ mt: 1 }}>
+          <img src={qr} alt="QR" width={220} height={220} style={{ borderRadius: 8, background: "#fff", padding: 4 }} />
+        </Box>
+      )}
+      {contributors.length > 0 && (
+        <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap sx={{ mt: 1.5 }} alignItems="center">
+          <Typography variant="caption" color="text.secondary">
+            {t("share.contributors")}:
+          </Typography>
+          {contributors.map((c) => (
+            <Chip
+              key={c.name}
+              size="small"
+              variant="outlined"
+              color={c.name !== "owner" && c.positive >= (project.contributor_target ?? 10) ? "success" : "default"}
+              label={`${c.name === "owner" ? t("share.owner") : c.name}: ${c.positive}${c.negative ? ` (+${c.negative})` : ""}`}
+            />
+          ))}
+        </Stack>
       )}
     </Box>
   );

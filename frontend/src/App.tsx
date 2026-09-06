@@ -4,6 +4,7 @@ import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { AppThemeProvider } from "./theme";
 import { api, type Job, type Project, type ProjectSummary, type TrainingParams } from "./api";
 import { ProjectSelector } from "./components/ProjectSelector";
+import { SystemChip } from "./components/SystemChip";
 import { ContributePage } from "./ContributePage";
 import { ConfigCard } from "./components/ConfigCard";
 import { RecorderCard } from "./components/RecorderCard";
@@ -95,6 +96,7 @@ function Main() {
               „{project.wake_word}“
             </Typography>
           )}
+          <SystemChip />
           {projects.length > 0 && (
             <Box sx={{ mr: 1 }}>
               <ProjectSelector projects={projects} current={currentProject} disabled={running} onChanged={onProjectsChanged} onError={showError} />

@@ -33,7 +33,7 @@ import RepeatIcon from "@mui/icons-material/Repeat";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
-import { api, type Recording, type RecordingsClient } from "../api";
+import { api, TAGS, type Recording, type RecordingsClient, type Tag } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
 import { Recorder, waveformPeaks } from "../lib/recorder";
 
@@ -78,6 +78,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const [undo, setUndo] = useState<{ kind: Kind; ids: string[] } | null>(null);
   const [importing, setImporting] = useState<{ done: number; total: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [tag, setTag] = useState<Tag>("normal");
 
   const recorderRef = useRef(new Recorder());
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -188,11 +189,11 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setLevel(0);
       setLastPeaks(waveformPeaks(samples));
       setPhase("uploading");
-      const saved = await client.uploadRecording(targetKind, wav);
+      const saved = await client.uploadRecording(targetKind, wav, "sample.wav", tag === "normal" ? null : tag);
       await refresh();
       return saved;
     },
-    [deviceId, devices.length, durationS, refresh, client],
+    [deviceId, devices.length, durationS, refresh, client, tag],
   );
 
   const recordSingle = useCallback(async () => {
@@ -396,7 +397,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
             </Box>
             <Box sx={{ flex: 1, width: "100%" }}>
               <Typography variant="h6">
-                {phase === "idle" && (kind === "positive" ? t("rec.idlePositive", { word: wakeWord, hint }) : t("rec.idleNegative"))}
+                {phase === "idle" && (kind === "positive" ? t("rec.idlePositive", { word: wakeWord, hint: tag === "normal" ? hint : t(`tag.hint.${tag}` as TKey) }) : t("rec.idleNegative"))}
                 {phase === "prepare" && t("rec.prepare")}
                 {phase === "countdown" && t("rec.countdown", { n: countdown })}
                 {phase === "recording" && t("rec.recording", { s: remaining.toFixed(1) })}
@@ -409,6 +410,19 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
               {lastPeaks && <Waveform peaks={lastPeaks} color={theme.palette.primary.main} height={40} />}
             </Box>
           </Stack>
+
+          {kind === "positive" && (
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+              <Typography variant="caption" color="text.secondary">
+                {t("tag.label")}:
+              </Typography>
+              {TAGS.map((tg) => (
+                <Tooltip key={tg} title={t(`tag.hint.${tg}` as TKey)}>
+                  <Chip size="small" label={t(`tag.${tg}` as TKey)} color={tag === tg ? "primary" : "default"} variant={tag === tg ? "filled" : "outlined"} onClick={() => setTag(tg)} disabled={busy} />
+                </Tooltip>
+              ))}
+            </Stack>
+          )}
 
           <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ md: "center" }} flexWrap="wrap" useFlexGap>
             <Stack direction="row" spacing={1} alignItems="center">
@@ -511,6 +525,9 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                       #{list.length - idx} · {rec.duration.toFixed(2)} s · {new Date(rec.created).toLocaleTimeString()}
                       {rec.contributor && !compact && (
                         <Chip size="small" variant="outlined" label={t("rec.by", { name: rec.contributor })} sx={{ ml: 1, height: 18, fontSize: 11 }} />
+                      )}
+                      {rec.tag && rec.tag !== "normal" && (
+                        <Chip size="small" color="secondary" variant="outlined" label={t(`tag.${rec.tag}` as TKey)} sx={{ ml: 1, height: 18, fontSize: 11 }} />
                       )}
                     </Typography>
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
