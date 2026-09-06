@@ -23,6 +23,10 @@ export type Project = {
 };
 
 export type SystemInfo = {
+  version: string;
+  latest_version: string | null;
+  update_available: boolean;
+  releases_url: string;
   gpu: null | { name: string; memory_total_mb: number; memory_used_mb: number; driver: string; utilization: number | null };
   gpu_available: boolean;
   tensorflow_cuda: boolean;
@@ -97,6 +101,8 @@ export type ValidationEntry = {
 export type RocPoint = { cutoff: number; frr: number; faph: number };
 export type AutoThreshold = {
   cutoff: number;
+  window?: number;
+  margin?: number;
   positives_total: number;
   positives_passed: number;
   positives_p05: number;
@@ -267,6 +273,7 @@ export const api = {
   monitorToNegative: (id: string) => request<Recording>(`/api/monitor/${id}/negative`, { method: "POST" }),
   deleteMonitor: (id: string) => request<{ deleted: string }>(`/api/monitor/${id}`, { method: "DELETE" }),
   clearMonitor: () => request<{ deleted: number }>("/api/monitor", { method: "DELETE" }),
+  monitorAdoptAll: () => request<{ moved: number }>("/api/monitor/adopt-all", { method: "POST" }),
   deviceEvents: (since?: string) => request<{ items: DeviceEvent[]; minimum_esphome_version: string; outdated_versions: string[]; now: string }>(`/api/monitor/device-events${since ? `?since=${encodeURIComponent(since)}` : ""}`),
   publicUrls: (projectId: string) => request<PublicUrls>(`/api/projects/${projectId}/public-urls`),
   bundleUrl: (ids?: string[]) => `/api/bundle${ids && ids.length ? `?projects=${ids.join(",")}` : ""}`,

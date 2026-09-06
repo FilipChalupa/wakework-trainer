@@ -12,14 +12,14 @@ import { api, type Evaluation, type Job, type MonitorItem } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
 import { Recorder } from "../lib/recorder";
 
-type Props = { jobs: Job[]; wakeWord: string; disabled: boolean; onError: (message: string) => void };
+type Props = { jobs: Job[]; wakeWord: string; disabled: boolean; onError: (message: string) => void; onInfo?: (message: string) => void };
 
 type FrameMsg = { type: "frames"; t: number; frames: { p: number; avg: number; detected: boolean }[]; detections: number; max: number };
 type DetectionMsg = { type: "detection"; item: MonitorItem; t: number };
 
 const HISTORY = 240;
 
-export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
+export function TestCard({ jobs, wakeWord, disabled, onError, onInfo }: Props) {
   const { t } = useI18n();
   const theme = useTheme();
   const models = jobs.filter((j) => j.status === "done" && j.model_url);
@@ -83,6 +83,17 @@ export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
       onError(errorText(t, e));
     }
   };
+  const retrainWithMonitor = async () => {
+    try {
+      const res = await api.monitorAdoptAll();
+      await api.startTraining({}, t("monitor.retrainLabel"));
+      await loadSaved();
+      onInfo?.(t("monitor.retrained", { n: res.moved }));
+    } catch (e) {
+      onError(errorText(t, e));
+    }
+  };
+
   const flagOutliers = async () => {
     if (!evaluation) return;
     const outliers = evaluation.items.filter((i) => i.outlier);
@@ -311,9 +322,14 @@ export function TestCard({ jobs, wakeWord, disabled, onError }: Props) {
                   {t("monitor.title")}
                 </Typography>
                 {saved.length > 0 && (
-                  <Button size="small" color="error" onClick={clearSaved}>
-                    {t("monitor.clear")}
-                  </Button>
+                  <>
+                    <Button size="small" variant="contained" onClick={retrainWithMonitor} disabled={disabled || active}>
+                      {t("monitor.retrain")}
+                    </Button>
+                    <Button size="small" color="error" onClick={clearSaved}>
+                      {t("monitor.clear")}
+                    </Button>
+                  </>
                 )}
               </Stack>
               <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>

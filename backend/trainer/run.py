@@ -603,10 +603,14 @@ def auto_threshold(job: dict, model_path: Path) -> dict | None:
         })
     if not candidates:
         return None
-    # best separation between wake word recordings and negatives; ties go to the ESPHome default window (5)
-    best = max(candidates, key=lambda c: (c["positives_passed"] - c["negatives_triggered"], c["margin"], c["window"] == 5))
-    best["candidates"] = candidates
     log("Window tuning: " + "; ".join(f"w={c['window']}: margin {c['margin']:+.2f}, cutoff {c['cutoff']:.2f}" for c in candidates))
+    return pick_best_window(candidates)
+
+
+def pick_best_window(candidates: list[dict]) -> dict:
+    """Best separation between wake word recordings and negatives; ties go to the ESPHome default window (5)."""
+    best = dict(max(candidates, key=lambda c: (c["positives_passed"] - c["negatives_triggered"], c["margin"], c["window"] == 5)))
+    best["candidates"] = [dict(c) for c in candidates]
     return best
 
 

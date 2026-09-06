@@ -75,3 +75,18 @@ def test_version_and_update_check(monkeypatch):
     system._cache.update(at=0.0, value=None)
     info = system.system_info()
     assert info["version"] == "1.1.0" and info["latest_version"] == "v1.2.0" and info["update_available"] is True
+
+
+def test_pick_best_window_is_json_serializable_and_prefers_separation():
+    import json
+
+    from trainer.run import pick_best_window
+
+    cands = [
+        {"window": 3, "margin": 0.1, "cutoff": 0.6, "positives_passed": 9, "negatives_triggered": 0},
+        {"window": 5, "margin": 0.2, "cutoff": 0.7, "positives_passed": 10, "negatives_triggered": 0},
+        {"window": 7, "margin": 0.25, "cutoff": 0.8, "positives_passed": 8, "negatives_triggered": 0},
+    ]
+    best = pick_best_window(cands)
+    assert best["window"] == 5 and len(best["candidates"]) == 3
+    json.dumps(best)  # must not raise (no circular reference)

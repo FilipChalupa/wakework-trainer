@@ -29,6 +29,20 @@ export function SystemChip() {
     tip = t("sys.cpuTip", { cpus: info.cpu_count ?? "?" });
   }
   return (
+    <>
+      <Tooltip title={info.update_available ? t("sys.update", { latest: info.latest_version ?? "" }) : t("sys.upToDate")}>
+        <Chip
+          size="small"
+          variant="outlined"
+          color={info.update_available ? "info" : "default"}
+          label={t("sys.version", { version: info.version })}
+          component="a"
+          href={info.releases_url}
+          target="_blank"
+          clickable
+          sx={{ mr: 1, display: { xs: "none", md: "inline-flex" } }}
+        />
+      </Tooltip>
     <Tooltip title={`${tip} ${last}`.trim()}>
       <Chip
         size="small"
@@ -39,5 +53,6 @@ export function SystemChip() {
         sx={{ mr: 1, display: { xs: "none", sm: "inline-flex" } }}
       />
     </Tooltip>
+    </>
   );
 }

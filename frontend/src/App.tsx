@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, AppBar, Box, Container, MenuItem, Select, Snackbar, Stack, Toolbar, Typography } from "@mui/material";
+import { Alert, AppBar, Badge, Box, Container, MenuItem, Select, Snackbar, Stack, Tab, Tabs, Toolbar, Typography } from "@mui/material";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { AppThemeProvider } from "./theme";
 import { api, type Job, type Project, type ProjectSummary, type TrainingParams } from "./api";
@@ -37,7 +37,18 @@ function Main() {
   const [reloadKey, setReloadKey] = useState(0);
   const [jobsVersion, setJobsVersion] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const { state, log, connected } = useTrainingStream();
+  const TABS = ["data", "train", "test", "deploy"] as const;
+  type TabId = (typeof TABS)[number];
+  const [tab, setTab] = useState<TabId>(() => {
+    const hash = location.hash.replace("#", "") as TabId;
+    return TABS.includes(hash) ? hash : "data";
+  });
+  const selectTab = (next: TabId) => {
+    setTab(next);
+    history.replaceState(null, "", `#${next}`);
+  };
 
   const showError = useCallback((message: string) => setError(message), []);
 
@@ -112,22 +123,41 @@ function Main() {
             <MenuItem value="en">English</MenuItem>
           </Select>
         </Toolbar>
+        <Tabs value={tab} onChange={(_, v) => selectTab(v as TabId)} variant="scrollable" allowScrollButtonsMobile sx={{ px: 1 }}>
+          <Tab value="data" label={t("tabs.data")} />
+          <Tab
+            value="train"
+            label={
+              <Badge color="info" variant="dot" invisible={!running}>
+                {t("tabs.train")}
+              </Badge>
+            }
+          />
+          <Tab value="test" label={t("tabs.test")} />
+          <Tab value="deploy" label={t("tabs.deploy")} />
+        </Tabs>
       </AppBar>
 
       <Container maxWidth="md" sx={{ py: 3 }}>
         <Stack spacing={3}>
-          {project && defaults && <ConfigCard project={project} defaults={defaults} disabled={running} onSaved={setProject} onError={showError} />}
-          {project && <RecorderCard key={project.id} wakeWord={project.wake_word} durationS={project.sample_duration_s} disabled={running} onCountsChange={setCounts} onError={showError} />}
-          <DatasetsCard disabled={running} onError={showError} />
-          <TrainingCard state={state} log={log} connected={connected} positiveCount={counts.positive} wakeWord={project?.wake_word ?? ""} onError={showError} onFinished={loadJobs} />
-          <JobsCard jobs={jobs} disabled={running} onChanged={loadJobs} onError={showError} />
-          <TestCard jobs={jobs} wakeWord={project?.wake_word ?? ""} disabled={running} onError={showError} />
-          {project && <DeployCard projectId={project.id} jobsVersion={jobsVersion} onError={showError} />}
+          {tab === "data" && project && defaults && <ConfigCard project={project} defaults={defaults} disabled={running} onSaved={setProject} onError={showError} />}
+          {tab === "data" && project && <RecorderCard key={project.id} wakeWord={project.wake_word} durationS={project.sample_duration_s} disabled={running} onCountsChange={setCounts} onError={showError} />}
+          {tab === "data" && <DatasetsCard disabled={running} onError={showError} />}
+          {tab === "train" && <TrainingCard state={state} log={log} connected={connected} positiveCount={counts.positive} wakeWord={project?.wake_word ?? ""} onError={showError} onFinished={loadJobs} />}
+          {tab === "train" && <JobsCard jobs={jobs} disabled={running} onChanged={loadJobs} onError={showError} />}
+          {tab === "test" && <TestCard jobs={jobs} wakeWord={project?.wake_word ?? ""} disabled={running} onError={showError} onInfo={setInfo} />}
+          {tab === "deploy" && project && <DeployCard projectId={project.id} jobsVersion={jobsVersion} onError={showError} />}
           <Typography variant="caption" color="text.secondary" textAlign="center">
             {t("app.footer")}
           </Typography>
         </Stack>
       </Container>
+
+      <Snackbar open={!!info} autoHideDuration={6000} onClose={() => setInfo(null)} anchorOrigin={{ vertical: "bottom", horizontal: "center" }}>
+        <Alert severity="success" onClose={() => setInfo(null)} variant="filled">
+          {info}
+        </Alert>
+      </Snackbar>
 
       <Snackbar open={!!error} autoHideDuration={8000} onClose={() => setError(null)} anchorOrigin={{ vertical: "bottom", horizontal: "center" }}>
         <Alert severity="error" onClose={() => setError(null)} variant="filled">

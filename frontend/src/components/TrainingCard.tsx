@@ -353,6 +353,9 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                       faph: state.final_metrics.faph.toFixed(2),
                     })}
                 </Typography>
+                {state.final_metrics?.auto_threshold?.window && state.final_metrics.auto_threshold.window !== 5 && (
+                  <Typography variant="body2">{t("train.autoWindow", { window: state.final_metrics.auto_threshold.window })}</Typography>
+                )}
                 {state.final_metrics?.auto_threshold && (
                   <Typography variant="body2">
                     {state.final_metrics.auto_threshold.negatives_total > 0

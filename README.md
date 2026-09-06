@@ -24,7 +24,8 @@ and testing the result live in the browser. The output `.tflite` + manifest work
   to see which samples are missed and which negatives trigger it; outliers (bad takes, negatives that trigger) can be
   flagged for review with one click.
 - **Long-run false-accept monitor** – leave the browser listening during normal household activity; every activation is
-  saved (last 3 s of audio), can be played back and turned into a negative sample for the next training run.
+  saved (last 3 s of audio), can be played back and turned into a negative sample – or adopt them all and retrain with one click.
+- **Contributor balance** – a warning when one voice dominates the wake word recordings (the model would overfit to it).
 - **Deploy to ESPHome** – the latest model and manifest are served from token-protected URLs, so ESPHome can load
   `model: https://…/manifest.json` directly; an example YAML also posts every on-device detection back to the trainer's
   device timeline (with the ESPHome version, warning when it is older than the manifest requires). A bundle ZIP packs the
@@ -42,12 +43,15 @@ and testing the result live in the browser. The output `.tflite` + manifest work
   optional ESC-50 environmental sounds and FMA music serve as real background and extra negatives.
 - **Hard negatives** – word fragments and swapped halves of your recordings are used as extra negatives so similar words
   do not trigger the model (optional).
-- **Automatic threshold** – after training the model is run over your own recordings and `probability_cutoff` is chosen so
-  that ~95 % of the wake word samples pass while every negative recording stays below.
+- **Automatic threshold and window** – after training the model is run over your own recordings with sliding windows of
+  3/5/7 frames; the window with the best separation is chosen and `probability_cutoff` is set so that ~95 % of the wake word
+  samples pass while every negative recording stays below.
 - **Charts and comparison** – validation loss and recall/accuracy over steps, test-set ROC curve; pick two runs to compare
   parameters, metrics and per-recording results side by side.
 - **Notifications** – browser notification when a run finishes, plus an optional webhook (e.g. Home Assistant) with a JSON summary.
-- **GPU indicator** – the header shows whether a GPU is visible to the container and whether the TensorFlow build can use it.
+- **GPU indicator and version** – the header shows whether a GPU is visible to the container and whether the TensorFlow build
+  can use it, plus the app version with a hint when a newer tag exists on GitHub.
+- **Tabbed UI** – Data (configuration, recording, datasets) · Training (runs, history) · Test · Deploy; the active tab is kept in the URL hash.
 - **Robust runs** – an interrupted run (container restart) is detected and can be resumed from its checkpoint; old runs
   are pruned automatically (`KEEP_JOBS`), heavy intermediate files are removed after a successful run.
 - **Export** – ZIP bundle with the `.tflite`, the ESPHome manifest, an example ESPHome YAML and the training log.
@@ -177,6 +181,12 @@ DATA_DIR=../data uvicorn app.main:app --reload
 # frontend (proxies /api to :8000)
 cd frontend && npm install && npm run dev
 ```
+
+## Not supported (yet)
+
+- **openWakeWord / Wyoming models** – openWakeWord's training stack pins TensorFlow 2.8 on Python 3.10 with torch, speechbrain and
+  onnx-tf and needs ~2 GB of pre-computed negative features; it cannot share this image. A separate container would be the way to go.
+- **TTS sample generation (Piper)** – planned as an optional Docker profile.
 
 ## Credits
 

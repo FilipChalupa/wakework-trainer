@@ -359,6 +359,18 @@ const cs = {
   "err.bad_param": "Tento parametr nelze sweepovat.",
   "err.bad_values": "Zadejte alespoň jednu hodnotu.",
   "err.no_models": "Žádný projekt nemá natrénovaný model.",
+  "tabs.data": "Data",
+  "tabs.train": "Trénink",
+  "tabs.test": "Test",
+  "tabs.deploy": "Nasazení",
+  "monitor.retrain": "Přidat vše jako negativa a přetrénovat",
+  "monitor.retrainLabel": "retrénink s negativy z monitoru",
+  "monitor.retrained": "{n} aktivací přidáno mezi negativa, trénink spuštěn.",
+  "share.imbalance": "{share} % wake word nahrávek namluvil jeden člověk ({name}). Model bude nejlépe reagovat na jeho hlas – požádejte ostatní o pár nahrávek (sdílený odkaz níže).",
+  "train.autoWindow": "Průměrovací okno nastaveno na {window} (nejlepší odstup mezi wake wordem a negativy).",
+  "sys.version": "v{version}",
+  "sys.update": "Nová verze {latest} na GitHubu",
+  "sys.upToDate": "Aktuální verze",
 };
 
 const en: Record<keyof typeof cs, string> = {
@@ -717,6 +729,18 @@ const en: Record<keyof typeof cs, string> = {
   "err.bad_param": "This parameter cannot be swept.",
   "err.bad_values": "Enter at least one value.",
   "err.no_models": "No project has a trained model.",
+  "tabs.data": "Data",
+  "tabs.train": "Training",
+  "tabs.test": "Test",
+  "tabs.deploy": "Deploy",
+  "monitor.retrain": "Add all as negatives and retrain",
+  "monitor.retrainLabel": "retrain with monitor negatives",
+  "monitor.retrained": "{n} activations added to negatives, training started.",
+  "share.imbalance": "{share} % of the wake word recordings come from one person ({name}). The model will work best for that voice – ask others for a few recordings (shared link below).",
+  "train.autoWindow": "Averaging window set to {window} (best separation between the wake word and negatives).",
+  "sys.version": "v{version}",
+  "sys.update": "New version {latest} on GitHub",
+  "sys.upToDate": "Up to date",
 };
 
 export type TKey = keyof typeof cs;

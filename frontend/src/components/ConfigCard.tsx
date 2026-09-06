@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, CardHeader, Chip, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Alert, Box, Button, Card, CardContent, CardHeader, Chip, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from "@mui/material";
 import ShareIcon from "@mui/icons-material/Share";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import LinkOffIcon from "@mui/icons-material/LinkOff";
@@ -187,8 +187,17 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
     }
   };
 
+  const totalPositive = contributors.reduce((a, c) => a + c.positive, 0);
+  const top = contributors[0];
+  const imbalance = top && totalPositive >= 10 && top.positive / totalPositive >= 0.8 ? { share: Math.round((top.positive / totalPositive) * 100), name: top.name === "owner" ? t("share.owner") : top.name } : null;
+
   return (
     <Box>
+      {imbalance && (
+        <Alert severity="warning" variant="outlined" sx={{ mb: 1.5 }}>
+          {t("share.imbalance", imbalance)}
+        </Alert>
+      )}
       <Stack direction="row" spacing={1} alignItems="center">
         <ShareIcon fontSize="small" color="primary" />
         <Typography variant="subtitle2">{t("share.title")}</Typography>
