@@ -3,43 +3,40 @@ import HistoryIcon from "@mui/icons-material/History";
 import DownloadIcon from "@mui/icons-material/Download";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { api, type Job } from "../api";
+import { errorText, useI18n, type TKey } from "../i18n";
 
 type Props = { jobs: Job[]; disabled: boolean; onChanged: () => void; onError: (message: string) => void };
 
-const COLORS: Record<string, "success" | "error" | "warning" | "info" | "default"> = {
-  done: "success",
-  failed: "error",
-  cancelled: "warning",
-  running: "info",
-};
+const COLORS: Record<string, "success" | "error" | "warning" | "info" | "default"> = { done: "success", failed: "error", cancelled: "warning", running: "info" };
 
 export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
+  const { t } = useI18n();
   const remove = async (id: string) => {
     try {
       await api.deleteJob(id);
       onChanged();
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     }
   };
 
   return (
     <Card>
-      <CardHeader avatar={<HistoryIcon color="primary" />} title="5. Natrénované modely" subheader="Historie trénování a stažení výstupů" />
+      <CardHeader avatar={<HistoryIcon color="primary" />} title={t("jobs.title")} subheader={t("jobs.subtitle")} />
       <CardContent>
         {jobs.length === 0 ? (
-          <Typography color="text.secondary">Zatím žádné trénování.</Typography>
+          <Typography color="text.secondary">{t("jobs.empty")}</Typography>
         ) : (
           <Box sx={{ overflowX: "auto" }}>
             <Table size="small">
               <TableHead>
                 <TableRow>
-                  <TableCell>Spuštěno</TableCell>
-                  <TableCell>Wake word</TableCell>
-                  <TableCell>Stav</TableCell>
-                  <TableCell>Vzorků</TableCell>
-                  <TableCell>Kroků</TableCell>
-                  <TableCell>Model</TableCell>
+                  <TableCell>{t("jobs.started")}</TableCell>
+                  <TableCell>{t("jobs.wakeWord")}</TableCell>
+                  <TableCell>{t("jobs.status")}</TableCell>
+                  <TableCell>{t("jobs.samples")}</TableCell>
+                  <TableCell>{t("jobs.steps")}</TableCell>
+                  <TableCell>{t("jobs.model")}</TableCell>
                   <TableCell />
                 </TableRow>
               </TableHead>
@@ -51,12 +48,17 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                       {job.wake_word}
                       {job.final_metrics && (
                         <Typography variant="caption" color="text.secondary" display="block">
-                          {job.final_metrics}
+                          {t("jobs.metrics", {
+                            auc: job.final_metrics.auc?.toFixed(3) ?? "–",
+                            cutoff: job.final_metrics.cutoff.toFixed(2),
+                            frr: Math.round(job.final_metrics.frr * 100),
+                            faph: job.final_metrics.faph.toFixed(2),
+                          })}
                         </Typography>
                       )}
                     </TableCell>
                     <TableCell>
-                      <Chip size="small" label={job.status} color={COLORS[job.status] ?? "default"} />
+                      <Chip size="small" label={t((`jobs.s.${job.status}` in { "jobs.s.done": 1, "jobs.s.failed": 1, "jobs.s.cancelled": 1, "jobs.s.running": 1 } ? `jobs.s.${job.status}` : "jobs.s.failed") as TKey)} color={COLORS[job.status] ?? "default"} />
                     </TableCell>
                     <TableCell>{job.positive_count}</TableCell>
                     <TableCell>{job.training?.training_steps}</TableCell>
@@ -68,7 +70,7 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                           </Button>
                           {job.manifest_url && (
                             <Button size="small" href={job.manifest_url} download>
-                              manifest
+                              {t("jobs.manifest")}
                             </Button>
                           )}
                         </Stack>
@@ -79,7 +81,7 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                       )}
                     </TableCell>
                     <TableCell align="right">
-                      <Tooltip title="Smazat běh včetně modelu">
+                      <Tooltip title={t("jobs.deleteTooltip")}>
                         <span>
                           <IconButton size="small" onClick={() => remove(job.job_id)} disabled={disabled || job.status === "running"}>
                             <DeleteIcon />

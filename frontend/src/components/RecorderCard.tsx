@@ -33,34 +33,12 @@ import RepeatIcon from "@mui/icons-material/Repeat";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
-import { api, type QualityIssue, type Recording } from "../api";
+import { api, type Recording } from "../api";
+import { errorText, useI18n, type TKey } from "../i18n";
 import { Recorder, waveformPeaks } from "../lib/recorder";
 
 type Kind = "positive" | "negative";
 const RECOMMENDED = 30;
-
-const ISSUE_LABELS: Record<QualityIssue, { label: string; hint: string }> = {
-  cut_start: { label: "oříznutý začátek", hint: "Slovo začíná hned na začátku nahrávky – začněte mluvit o chvíli později." },
-  cut_end: { label: "oříznutý konec", hint: "Slovo končí až na konci nahrávky – začněte mluvit dříve nebo prodlužte délku vzorku." },
-  too_short: { label: "příliš krátké", hint: "V nahrávce je jen velmi krátký zvuk." },
-  silent: { label: "ticho", hint: "Nebyl zaznamenán žádný zvuk – zkontrolujte mikrofon." },
-  clipping: { label: "přebuzeno", hint: "Signál je oříznutý – mluvte tišeji nebo dále od mikrofonu." },
-  too_quiet: { label: "příliš tiché", hint: "Nahrávka je velmi tichá – mluvte blíž k mikrofonu." },
-  unreadable: { label: "nečitelné", hint: "Soubor se nepodařilo přečíst." },
-};
-
-const VARIATION_HINTS = [
-  "normálně, přirozeně",
-  "trochu tišeji",
-  "trochu hlasitěji",
-  "pomaleji",
-  "rychleji",
-  "s otázkou v hlase",
-  "z větší vzdálenosti od mikrofonu",
-  "šeptem, ale zřetelně",
-  "vesele",
-  "unaveně / monotónně",
-];
 
 type Props = {
   wakeWord: string;
@@ -74,6 +52,9 @@ type Phase = "idle" | "prepare" | "countdown" | "recording" | "uploading";
 
 export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, onError }: Props) {
   const theme = useTheme();
+  const { t } = useI18n();
+  const fail = useCallback((e: unknown) => onError(e instanceof Error && e.message === "mic_unsupported" ? t("rec.micUnsupported") : errorText(t, e)), [onError, t]);
+  const VARIATION_HINTS = t("rec.hints").split("|");
   const [kind, setKind] = useState<Kind>("positive");
   const [items, setItems] = useState<Record<Kind, Recording[]>>({ positive: [], negative: [] });
   const [phase, setPhase] = useState<Phase>("idle");
@@ -106,9 +87,9 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setItems({ positive: pos.items, negative: neg.items });
       onCountsChange({ positive: pos.items.length, negative: neg.items.length });
     } catch (e) {
-      onError((e as Error).message);
+      fail(e);
     }
-  }, [onCountsChange, onError]);
+  }, [onCountsChange, fail]);
 
   useEffect(() => {
     refresh();
@@ -218,12 +199,12 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setPhase("idle");
       if (saved && autoPlay) await playOne(saved);
     } catch (e) {
-      onError((e as Error).message);
+      fail(e);
     } finally {
       setPhase("idle");
       busyRef.current = false;
     }
-  }, [autoPlay, captureOne, disabled, kind, onError, playOne, stopPlayback]);
+  }, [autoPlay, captureOne, disabled, kind, fail, playOne, stopPlayback]);
 
   const recordSeries = async () => {
     if (busyRef.current || disabled) return;
@@ -243,7 +224,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
         else await new Promise((r) => setTimeout(r, 400));
       }
     } catch (e) {
-      onError((e as Error).message);
+      fail(e);
     } finally {
       setSeries(null);
       setPhase("idle");
@@ -284,7 +265,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setUndo({ kind: targetKind, ids });
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      fail(e);
     }
   };
 
@@ -295,7 +276,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setUndo(null);
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      fail(e);
     }
   };
 
@@ -314,7 +295,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setImporting({ done: i + 1, total: list.length });
     }
     setImporting(null);
-    if (failed) onError(`${failed} souborů se nepodařilo importovat.`);
+    if (failed) onError(t("rec.importFailed", { n: failed }));
     await refresh();
   };
 
@@ -350,12 +331,12 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
     >
       <CardHeader
         avatar={<GraphicEqIcon color="primary" />}
-        title="2. Nahrávání vzorků"
-        subheader={`WAV · 16 kHz · mono · 16-bit PCM · ${durationS.toFixed(1)} s`}
+        title={t("rec.title")}
+        subheader={t("rec.subtitle", { s: durationS.toFixed(1) })}
         action={
           <Chip
             color={positiveCount >= 20 ? "success" : "default"}
-            label={`${positiveCount} / ${RECOMMENDED} vzorků`}
+            label={t("rec.chip", { count: positiveCount, recommended: RECOMMENDED })}
             variant={positiveCount >= 20 ? "filled" : "outlined"}
           />
         }
@@ -365,19 +346,18 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
           <Box>
             <LinearProgress variant="determinate" value={progress} sx={{ height: 8, borderRadius: 4 }} />
             <Typography variant="caption" color="text.secondary">
-              Doporučeno alespoň 20–40 nahrávek wake wordu, ideálně od více lidí, z různé vzdálenosti a s různou intonací.
+              {t("rec.recommended")}
             </Typography>
           </Box>
 
           <Tabs value={kind} onChange={(_, v) => setKind(v)} variant="fullWidth">
-            <Tab value="positive" label={`Wake word „${wakeWord}“ (${items.positive.length})`} />
-            <Tab value="negative" label={`Negativní – jiná řeč / hluk (${items.negative.length})`} />
+            <Tab value="positive" label={t("rec.tabPositive", { word: wakeWord, n: items.positive.length })} />
+            <Tab value="negative" label={t("rec.tabNegative", { n: items.negative.length })} />
           </Tabs>
 
           {kind === "negative" && (
             <Alert severity="info" variant="outlined">
-              Volitelné: nahrajte několik vzorků běžné řeči, podobných slov nebo hluku z místa, kde bude zařízení stát. Model se tak naučí,
-              na co nereagovat. Základní negativní data se stáhnou automaticky.
+              {t("rec.negativeInfo")}
             </Alert>
           )}
 
@@ -411,16 +391,14 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
             </Box>
             <Box sx={{ flex: 1, width: "100%" }}>
               <Typography variant="h6">
-                {phase === "idle" && (kind === "positive" ? `Řekněte „${wakeWord}“ – ${hint}` : "Mluvte nebo nechte znít hluk")}
-                {phase === "prepare" && "Připravuji mikrofon…"}
-                {phase === "countdown" && `Připravte se… ${countdown}`}
-                {phase === "recording" && `Nahrávám… ${remaining.toFixed(1)} s`}
-                {phase === "uploading" && "Ukládám…"}
+                {phase === "idle" && (kind === "positive" ? t("rec.idlePositive", { word: wakeWord, hint }) : t("rec.idleNegative"))}
+                {phase === "prepare" && t("rec.prepare")}
+                {phase === "countdown" && t("rec.countdown", { n: countdown })}
+                {phase === "recording" && t("rec.recording", { s: remaining.toFixed(1) })}
+                {phase === "uploading" && t("rec.uploading")}
               </Typography>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                {series
-                  ? `Série: ${series.done} / ${series.total} hotovo. Klikněte na tlačítko nebo stiskněte Esc pro zastavení.`
-                  : "Klikněte na tlačítko nebo stiskněte mezerník. Nahrávka trvá přesně " + durationS.toFixed(1) + " s – slovo řekněte zhruba uprostřed."}
+                {series ? t("rec.seriesStatus", { done: series.done, total: series.total }) : t("rec.instructions", { s: durationS.toFixed(1) })}
               </Typography>
               <LinearProgress variant="determinate" value={level * 100} color={level > 0.9 ? "error" : "success"} sx={{ height: 10, borderRadius: 5, mb: 1 }} />
               {lastPeaks && <Waveform peaks={lastPeaks} color={theme.palette.primary.main} height={40} />}
@@ -432,7 +410,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
               <TextField
                 select
                 size="small"
-                label="Série"
+                label={t("rec.series")}
                 value={seriesSize}
                 onChange={(e) => setSeriesSize(Number(e.target.value))}
                 sx={{ minWidth: 110 }}
@@ -440,25 +418,25 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
               >
                 {[5, 10, 20, 30].map((n) => (
                   <MenuItem key={n} value={n}>
-                    {n} nahrávek
+                    {t("rec.seriesN", { n })}
                   </MenuItem>
                 ))}
               </TextField>
               <Button variant="outlined" startIcon={<RepeatIcon />} onClick={recordSeries} disabled={disabled || busy}>
-                Nahrát sérii s odpočtem
+                {t("rec.seriesButton")}
               </Button>
             </Stack>
-            <FormControlLabel control={<Switch checked={autoPlay} onChange={(e) => setAutoPlay(e.target.checked)} />} label="Přehrát po nahrání" />
+            <FormControlLabel control={<Switch checked={autoPlay} onChange={(e) => setAutoPlay(e.target.checked)} />} label={t("rec.autoplay")} />
             <TextField
               select
               size="small"
-              label="Mikrofon"
+              label={t("rec.mic")}
               value={deviceId}
               onChange={(e) => setDeviceId(e.target.value)}
               sx={{ minWidth: 220 }}
               disabled={busy}
             >
-              <MenuItem value="">Výchozí mikrofon</MenuItem>
+              <MenuItem value="">{t("rec.micDefault")}</MenuItem>
               {devices.map((d) => (
                 <MenuItem key={d.deviceId} value={d.deviceId}>
                   {d.label}
@@ -467,13 +445,13 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
             </TextField>
             <input ref={fileInputRef} type="file" accept="audio/*,.wav" multiple hidden onChange={(e) => e.target.files && importFiles(e.target.files)} />
             <Button variant="text" startIcon={<UploadFileIcon />} onClick={() => fileInputRef.current?.click()} disabled={disabled || !!importing}>
-              {importing ? `Importuji ${importing.done}/${importing.total}` : "Importovat soubory"}
+              {importing ? t("rec.importing", { done: importing.done, total: importing.total }) : t("rec.import")}
             </Button>
           </Stack>
 
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Button size="small" startIcon={playAll ? <StopIcon /> : <PlaylistPlayIcon />} onClick={playEverything} disabled={list.length === 0}>
-              {playAll ? "Zastavit" : "Přehrát vše"}
+              {playAll ? t("rec.stop") : t("rec.playAll")}
             </Button>
             <Button
               size="small"
@@ -482,22 +460,22 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
               onClick={() => removeMany(kind, [...selected])}
               disabled={disabled || selected.size === 0}
             >
-              Smazat označené ({selected.size})
+              {t("rec.deleteSelected", { n: selected.size })}
             </Button>
             {problems > 0 && (
-              <Tooltip title="Nahrávky s varováním nejsou automaticky vyloučeny – poslechněte si je a špatné smažte.">
-                <Chip icon={<WarningAmberIcon />} color="warning" variant="outlined" size="small" label={`${problems} s varováním`} onClick={() => setSelected(new Set(list.filter((r) => r.quality.issues.length).map((r) => r.id)))} />
+              <Tooltip title={t("rec.warningsTooltip")}>
+                <Chip icon={<WarningAmberIcon />} color="warning" variant="outlined" size="small" label={t("rec.withWarnings", { n: problems })} onClick={() => setSelected(new Set(list.filter((r) => r.quality.issues.length).map((r) => r.id)))} />
               </Tooltip>
             )}
             <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-              Soubory lze také přetáhnout myší sem.
+              {t("rec.dragHint")}
             </Typography>
           </Stack>
 
           <Box sx={{ maxHeight: 360, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 2 }}>
             {list.length === 0 && (
               <Typography sx={{ p: 2 }} color="text.secondary">
-                Zatím žádné nahrávky. Nahrané vzorky se ukládají do složky /data na serveru.
+                {t("rec.empty")}
               </Typography>
             )}
             {[...list].reverse().map((rec, idx) => {
@@ -529,18 +507,18 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                     </Typography>
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                       {rec.quality.issues.map((issue) => (
-                        <Tooltip key={issue} title={ISSUE_LABELS[issue]?.hint ?? issue}>
-                          <Chip size="small" color="warning" variant="outlined" label={ISSUE_LABELS[issue]?.label ?? issue} sx={{ height: 20, fontSize: 11 }} />
+                        <Tooltip key={issue} title={t(`rec.issueHint.${issue}` as TKey)}>
+                          <Chip size="small" color="warning" variant="outlined" label={t(`rec.issue.${issue}` as TKey)} sx={{ height: 20, fontSize: 11 }} />
                         </Tooltip>
                       ))}
                       {rec.quality.issues.length === 0 && (
                         <Typography variant="caption" color="text.secondary">
-                          špička {Math.round((rec.quality.peak ?? 0) * 100)} % · {rec.quality.rms_db} dB
+                          {t("rec.peakInfo", { peak: Math.round((rec.quality.peak ?? 0) * 100), db: rec.quality.rms_db ?? 0 })}
                         </Typography>
                       )}
                     </Stack>
                   </Box>
-                  <Tooltip title="Smazat (lze vrátit)">
+                  <Tooltip title={t("rec.deleteTooltip")}>
                     <span>
                       <IconButton size="small" onClick={() => removeMany(rec.kind, [rec.id])} disabled={disabled}>
                         <DeleteIcon />
@@ -557,10 +535,10 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
         open={!!undo}
         autoHideDuration={8000}
         onClose={() => setUndo(null)}
-        message={undo ? `Smazáno: ${undo.ids.length === 1 ? "1 nahrávka" : `${undo.ids.length} nahrávek`}` : ""}
+        message={undo ? t("rec.deleted", { n: undo.ids.length }) : ""}
         action={
           <Button color="primary" size="small" onClick={restore}>
-            Vrátit zpět
+            {t("rec.undo")}
           </Button>
         }
       />

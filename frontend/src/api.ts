@@ -37,7 +37,7 @@ export type Recording = {
 export type Dataset = {
   id: string;
   title: string;
-  description: string;
+  description: { cs: string; en: string };
   size_mb: number;
   required: boolean;
   installed: boolean;
@@ -58,12 +58,17 @@ export type ValidationEntry = {
   average_viable_recall: number;
 };
 
+export type FinalMetrics = { auc: number | null; cutoff: number; frr: number; faph: number; manifest_cutoff: number };
+
 export type TrainingState = {
   status: "idle" | "downloading" | "preparing" | "training" | "converting" | "done" | "failed" | "cancelled";
   job_id: string | null;
   wake_word: string | null;
   stage: string | null;
+  stage_key: string | null;
   message: string | null;
+  message_key: string | null;
+  message_params: Record<string, string | number> | null;
   progress: { current: number; total: number };
   step: number;
   total_steps: number;
@@ -71,7 +76,7 @@ export type TrainingState = {
   train_metrics: null | { accuracy: number; recall: number; precision: number; loss: number };
   validation: ValidationEntry[];
   best: null | { minimization: number; maximization: number };
-  final_metrics: string | null;
+  final_metrics: FinalMetrics | null;
   model_url: string | null;
   manifest_url: string | null;
   started_at: string | null;
@@ -89,26 +94,56 @@ export type Job = {
   status: string;
   positive_count: number;
   training: TrainingParams;
-  final_metrics: string | null;
+  final_metrics: FinalMetrics | null;
   model_url: string | null;
   manifest_url: string | null;
   model_size: number | null;
 };
 
+export class ApiError extends Error {
+  code: string | null;
+  constructor(message: string, code: string | null = null) {
+    super(message);
+    this.code = code;
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: unknown = res.statusText;
     try {
       const body = await res.json();
-      detail = body.detail ?? JSON.stringify(body);
+      detail = body.detail ?? body;
     } catch {
       /* ignore */
     }
-    throw new Error(detail);
+    if (detail && typeof detail === "object" && "code" in (detail as object)) {
+      const d = detail as { code: string; message?: string };
+      throw new ApiError(d.message ?? d.code, d.code);
+    }
+    throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return res.json() as Promise<T>;
 }
+
+export type TestInfo = { job_id: string; model: string; probability_cutoff: number; sliding_window_size: number };
+
+export type EvaluationItem = {
+  id: string;
+  kind: "positive" | "negative";
+  url: string;
+  max_probability: number | null;
+  detections: number;
+  error?: string;
+};
+
+export type Evaluation = {
+  cutoff: number;
+  window: number;
+  items: EvaluationItem[];
+  summary: { positive_total: number; positive_detected: number; negative_total: number; negative_triggered: number };
+};
 
 export const api = {
   getConfig: () => request<{ project: Project; defaults: TrainingParams }>("/api/config"),
@@ -134,5 +169,8 @@ export const api = {
   cancelTraining: () => request<TrainingState>("/api/train/cancel", { method: "POST" }),
   trainingSnapshot: () => request<TrainingState>("/api/train"),
   listJobs: () => request<{ items: Job[] }>("/api/jobs"),
+  testInfo: (jobId: string) => request<TestInfo>(`/api/jobs/${jobId}/test-info`),
+  evaluateJob: (jobId: string, cutoff: number, window: number) =>
+    request<Evaluation>(`/api/jobs/${jobId}/evaluate?cutoff=${cutoff}&window=${window}`, { method: "POST" }),
   deleteJob: (id: string) => request<unknown>(`/api/jobs/${id}`, { method: "DELETE" }),
 };

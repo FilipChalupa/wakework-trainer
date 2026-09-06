@@ -29,7 +29,7 @@ export class Recorder {
     if (this.stream && deviceId === this.deviceId) return;
     if (this.stream) this.close();
     if (!navigator.mediaDevices?.getUserMedia) {
-      throw new Error("Prohlížeč nepodporuje přístup k mikrofonu (je stránka otevřená přes HTTPS nebo localhost?).");
+      throw new Error("mic_unsupported");
     }
     this.deviceId = deviceId;
     this.stream = await navigator.mediaDevices.getUserMedia({
@@ -135,6 +135,77 @@ export class Recorder {
     return { wav: encodeWav(resampled, TARGET_SAMPLE_RATE), samples: resampled, sampleRate: TARGET_SAMPLE_RATE };
   }
 
+  /**
+   * Streams microphone audio as 16 kHz int16 chunks (~100 ms) until the returned stop function is called.
+   */
+  async startStream(onChunk: (pcm: Int16Array) => void, onLevel?: (rms: number) => void): Promise<() => void> {
+    await this.init(this.deviceId);
+    const context = this.context!;
+    if (context.state === "suspended") await context.resume();
+    const source = context.createMediaStreamSource(this.stream!);
+    const resampler = new StreamResampler(context.sampleRate, TARGET_SAMPLE_RATE);
+    let pending: Float32Array[] = [];
+    let pendingLength = 0;
+    const CHUNK = 1600; // 100 ms at 16 kHz
+
+    const push = (data: Float32Array) => {
+      if (onLevel) {
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+        onLevel(Math.sqrt(sum / data.length));
+      }
+      const out = resampler.process(data);
+      if (!out.length) return;
+      pending.push(out);
+      pendingLength += out.length;
+      while (pendingLength >= CHUNK) {
+        const merged = new Float32Array(pendingLength);
+        let off = 0;
+        for (const p of pending) {
+          merged.set(p, off);
+          off += p.length;
+        }
+        const chunk = merged.subarray(0, CHUNK);
+        const rest = merged.subarray(CHUNK);
+        pending = rest.length ? [rest.slice(0)] : [];
+        pendingLength = rest.length;
+        const pcm = new Int16Array(CHUNK);
+        for (let i = 0; i < CHUNK; i++) {
+          const s = Math.max(-1, Math.min(1, chunk[i]));
+          pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
+        onChunk(pcm);
+      }
+    };
+
+    let cleanup: () => void;
+    if (context.audioWorklet && this.workletUrl) {
+      const node = new AudioWorkletNode(context, "capture-processor");
+      node.port.onmessage = (e) => push(e.data as Float32Array);
+      source.connect(node);
+      const sink = context.createGain();
+      sink.gain.value = 0;
+      node.connect(sink).connect(context.destination);
+      cleanup = () => {
+        node.port.onmessage = null;
+        source.disconnect();
+        node.disconnect();
+        sink.disconnect();
+      };
+    } else {
+      const processor = context.createScriptProcessor(2048, 1, 1);
+      processor.onaudioprocess = (e) => push(e.inputBuffer.getChannelData(0).slice(0));
+      source.connect(processor);
+      processor.connect(context.destination);
+      cleanup = () => {
+        processor.onaudioprocess = null;
+        source.disconnect();
+        processor.disconnect();
+      };
+    }
+    return cleanup;
+  }
+
   close(): void {
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -215,4 +286,36 @@ export function waveformPeaks(samples: Float32Array, buckets = 80): number[] {
     peaks.push(peak);
   }
   return peaks;
+}
+
+/** Stateful linear resampler for continuous streams. */
+class StreamResampler {
+  private ratio: number;
+  private last = 0;
+  private hasLast = false;
+  private pos = 0; // fractional read position relative to the start of the current input (in input samples)
+
+  constructor(fromRate: number, toRate: number) {
+    this.ratio = fromRate / toRate;
+  }
+
+  process(input: Float32Array): Float32Array {
+    if (this.ratio === 1) return input;
+    // virtual input = [last, ...input]
+    const n = input.length + (this.hasLast ? 1 : 0);
+    const get = (i: number) => (this.hasLast ? (i === 0 ? this.last : input[i - 1]) : input[i]);
+    const out: number[] = [];
+    let pos = this.pos;
+    while (pos + 1 < n) {
+      const i0 = Math.floor(pos);
+      const frac = pos - i0;
+      out.push(get(i0) * (1 - frac) + get(i0 + 1) * frac);
+      pos += this.ratio;
+    }
+    // keep the last input sample for interpolation continuity
+    this.last = get(n - 1);
+    this.pos = pos - (n - 1);
+    this.hasLast = true;
+    return Float32Array.from(out);
+  }
 }

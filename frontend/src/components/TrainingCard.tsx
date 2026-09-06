@@ -1,22 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  Alert,
-  Box,
-  Button,
-  Card,
-  CardContent,
-  CardHeader,
-  Chip,
-  Collapse,
-  LinearProgress,
-  Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
-  Typography,
-} from "@mui/material";
+import { Alert, Box, Button, Card, CardContent, CardHeader, Chip, Collapse, LinearProgress, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import ModelTrainingIcon from "@mui/icons-material/ModelTraining";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import StopIcon from "@mui/icons-material/Stop";
@@ -24,6 +7,7 @@ import DownloadIcon from "@mui/icons-material/Download";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
 import { api, type TrainingState } from "../api";
+import { errorText, useI18n, type TKey } from "../i18n";
 
 type Props = {
   state: TrainingState;
@@ -35,16 +19,19 @@ type Props = {
   onFinished: () => void;
 };
 
-const STATUS_LABEL: Record<TrainingState["status"], { label: string; color: "default" | "info" | "success" | "error" | "warning" }> = {
-  idle: { label: "Připraveno", color: "default" },
-  downloading: { label: "Stahuji data", color: "info" },
-  preparing: { label: "Příprava dat", color: "info" },
-  training: { label: "Trénuji", color: "info" },
-  converting: { label: "Konverze do TFLite", color: "info" },
-  done: { label: "Hotovo", color: "success" },
-  failed: { label: "Chyba", color: "error" },
-  cancelled: { label: "Zrušeno", color: "warning" },
+const STATUS_COLOR: Record<TrainingState["status"], "default" | "info" | "success" | "error" | "warning"> = {
+  idle: "default",
+  downloading: "info",
+  preparing: "info",
+  training: "info",
+  converting: "info",
+  done: "success",
+  failed: "error",
+  cancelled: "warning",
 };
+
+const STAGE_KEYS = new Set(["checking_datasets", "downloading_dataset", "extracting_dataset", "preparing", "training", "converting", "done", "failed", "cancelled"]);
+const MSG_KEYS = new Set(["init_tf", "augment_positive", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready"]);
 
 function formatBytes(n: number) {
   if (n > 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GB`;
@@ -53,6 +40,7 @@ function formatBytes(n: number) {
 }
 
 export function TrainingCard({ state, log, connected, positiveCount, wakeWord, onError, onFinished }: Props) {
+  const { t } = useI18n();
   const [showLog, setShowLog] = useState(false);
   const [busy, setBusy] = useState(false);
   const logRef = useRef<HTMLDivElement | null>(null);
@@ -75,7 +63,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
       await api.startTraining();
       setShowLog(true);
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     } finally {
       setBusy(false);
     }
@@ -86,7 +74,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
     try {
       await api.cancelTraining();
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     } finally {
       setBusy(false);
     }
@@ -97,18 +85,20 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
   const current = isTraining ? state.step : state.progress.current;
   const pct = total > 0 ? Math.min(100, (current / total) * 100) : 0;
   const lastValidation = state.validation[state.validation.length - 1];
-  const statusMeta = STATUS_LABEL[state.status] ?? STATUS_LABEL.idle;
+  const params = state.message_params ?? {};
+  const stageText = state.stage_key && STAGE_KEYS.has(state.stage_key) ? t(`train.stage.${state.stage_key}` as TKey, params) : state.stage;
+  const messageText = state.message_key && MSG_KEYS.has(state.message_key) ? t(`train.msg.${state.message_key}` as TKey, params) : state.message;
 
   return (
     <Card>
       <CardHeader
         avatar={<ModelTrainingIcon color="primary" />}
-        title="4. Trénování modelu"
-        subheader="microWakeWord (MixedNet) → kvantizovaný streamovaný TensorFlow Lite model"
+        title={t("train.title")}
+        subheader={t("train.subtitle")}
         action={
           <Stack direction="row" spacing={1} alignItems="center">
-            {!connected && <Chip size="small" label="offline" color="warning" variant="outlined" />}
-            <Chip label={statusMeta.label} color={statusMeta.color} />
+            {!connected && <Chip size="small" label={t("train.offline")} color="warning" variant="outlined" />}
+            <Chip label={t(`train.status.${state.status}` as TKey)} color={STATUS_COLOR[state.status] ?? "default"} />
           </Stack>
         }
       />
@@ -116,26 +106,24 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
         <Stack spacing={2}>
           {positiveCount < 20 && !running && (
             <Alert severity={positiveCount < 3 ? "error" : "warning"} variant="outlined">
-              {positiveCount < 3
-                ? "Pro trénování nahrajte alespoň 3 vzorky wake wordu."
-                : `Máte ${positiveCount} vzorků. Model půjde natrénovat, ale s 20–40 vzorky bude výrazně spolehlivější.`}
+              {positiveCount < 3 ? t("train.fewSamplesError") : t("train.fewSamplesWarn", { n: positiveCount })}
             </Alert>
           )}
 
           <Stack direction="row" spacing={2} alignItems="center">
             {!running ? (
               <Button variant="contained" size="large" startIcon={<PlayArrowIcon />} onClick={start} disabled={busy || positiveCount < 3}>
-                Spustit trénování
+                {t("train.start")}
               </Button>
             ) : (
               <Button variant="outlined" color="error" size="large" startIcon={<StopIcon />} onClick={cancel} disabled={busy}>
-                Zrušit
+                {t("train.cancel")}
               </Button>
             )}
             <Box sx={{ flex: 1 }}>
-              <Typography variant="subtitle2">{state.stage ?? "Čeká na spuštění"}</Typography>
+              <Typography variant="subtitle2">{stageText ?? t("train.waiting")}</Typography>
               <Typography variant="body2" color="text.secondary">
-                {state.message ?? (state.wake_word ? `Wake word: ${state.wake_word}` : `Wake word: ${wakeWord}`)}
+                {messageText ?? t("train.wakeWord", { word: state.wake_word ?? wakeWord })}
               </Typography>
             </Box>
           </Stack>
@@ -146,7 +134,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
               <Stack direction="row" justifyContent="space-between" sx={{ mt: 0.5 }}>
                 <Typography variant="caption" color="text.secondary">
                   {isTraining
-                    ? `Krok ${state.step} / ${state.total_steps}`
+                    ? t("train.step", { step: state.step, total: state.total_steps })
                     : state.status === "downloading" && total > 0
                       ? `${formatBytes(current)} / ${formatBytes(total)}`
                       : total > 0
@@ -162,13 +150,13 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
 
           {state.train_metrics && (
             <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
-              <Metric label="Loss (batch)" value={state.train_metrics.loss.toFixed(4)} />
-              <Metric label="Přesnost" value={`${(state.train_metrics.accuracy * 100).toFixed(1)} %`} />
-              <Metric label="Recall" value={`${(state.train_metrics.recall * 100).toFixed(1)} %`} />
-              <Metric label="Precision" value={`${(state.train_metrics.precision * 100).toFixed(1)} %`} />
-              {lastValidation && <Metric label="Val. loss" value={lastValidation.loss.toFixed(4)} />}
-              {lastValidation && <Metric label="Val. recall" value={`${(lastValidation.recall * 100).toFixed(1)} %`} />}
-              {lastValidation && <Metric label="Falešné aktivace / h" value={lastValidation.false_positives_per_hour.toFixed(2)} />}
+              <Metric label={t("train.m.lossBatch")} value={state.train_metrics.loss.toFixed(4)} />
+              <Metric label={t("train.m.accuracy")} value={`${(state.train_metrics.accuracy * 100).toFixed(1)} %`} />
+              <Metric label={t("train.m.recall")} value={`${(state.train_metrics.recall * 100).toFixed(1)} %`} />
+              <Metric label={t("train.m.precision")} value={`${(state.train_metrics.precision * 100).toFixed(1)} %`} />
+              {lastValidation && <Metric label={t("train.m.valLoss")} value={lastValidation.loss.toFixed(4)} />}
+              {lastValidation && <Metric label={t("train.m.valRecall")} value={`${(lastValidation.recall * 100).toFixed(1)} %`} />}
+              {lastValidation && <Metric label={t("train.m.faph")} value={lastValidation.false_positives_per_hour.toFixed(2)} />}
             </Stack>
           )}
 
@@ -177,14 +165,14 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Krok</TableCell>
-                    <TableCell align="right">Val. loss</TableCell>
-                    <TableCell align="right">Přesnost</TableCell>
-                    <TableCell align="right">Recall</TableCell>
-                    <TableCell align="right">Precision</TableCell>
-                    <TableCell align="right">AUC</TableCell>
-                    <TableCell align="right">Recall bez FA</TableCell>
-                    <TableCell align="right">FA / hod</TableCell>
+                    <TableCell>{t("train.t.step")}</TableCell>
+                    <TableCell align="right">{t("train.m.valLoss")}</TableCell>
+                    <TableCell align="right">{t("train.m.accuracy")}</TableCell>
+                    <TableCell align="right">{t("train.m.recall")}</TableCell>
+                    <TableCell align="right">{t("train.m.precision")}</TableCell>
+                    <TableCell align="right">{t("train.t.auc")}</TableCell>
+                    <TableCell align="right">{t("train.t.recallNoFa")}</TableCell>
+                    <TableCell align="right">{t("train.t.faph")}</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -207,23 +195,30 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
 
           {state.status === "failed" && (
             <Alert severity="error">
-              {state.error ?? "Trénování selhalo."} Podrobnosti najdete v logu níže.
+              {state.error ?? t("train.failed")} {t("train.failedHint")}
             </Alert>
           )}
 
           {state.status === "done" && state.model_url && (
-            <Alert severity="success" variant="outlined" action={null}>
+            <Alert severity="success" variant="outlined">
               <Stack spacing={1}>
                 <Typography variant="body2">
-                  Model je hotový. {state.final_metrics && <span>Výsledek na testovací sadě: {state.final_metrics}</span>}
+                  {t("train.done")}{" "}
+                  {state.final_metrics &&
+                    t("train.finalMetrics", {
+                      auc: state.final_metrics.auc?.toFixed(3) ?? "–",
+                      cutoff: state.final_metrics.cutoff.toFixed(2),
+                      frr: Math.round(state.final_metrics.frr * 100),
+                      faph: state.final_metrics.faph.toFixed(2),
+                    })}
                 </Typography>
                 <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                   <Button variant="contained" startIcon={<DownloadIcon />} href={state.model_url} download>
-                    Stáhnout .tflite
+                    {t("train.downloadModel")}
                   </Button>
                   {state.manifest_url && (
                     <Button variant="outlined" startIcon={<DownloadIcon />} href={state.manifest_url} download>
-                      Manifest pro ESPHome (.json)
+                      {t("train.downloadManifest")}
                     </Button>
                   )}
                 </Stack>
@@ -233,7 +228,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
 
           <Box>
             <Button size="small" onClick={() => setShowLog((v) => !v)} startIcon={showLog ? <ExpandLessIcon /> : <ExpandMoreIcon />}>
-              Log trénování ({log.length})
+              {t("train.log", { n: log.length })}
             </Button>
             <Collapse in={showLog}>
               <Box
@@ -244,7 +239,7 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                   overflow: "auto",
                   p: 1.5,
                   borderRadius: 2,
-                  bgcolor: (t) => (t.palette.mode === "dark" ? "#05080f" : "#0f172a"),
+                  bgcolor: (th) => (th.palette.mode === "dark" ? "#05080f" : "#0f172a"),
                   color: "#cbd5e1",
                   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
                   fontSize: 11,

@@ -5,10 +5,12 @@ import DownloadIcon from "@mui/icons-material/Download";
 import DeleteIcon from "@mui/icons-material/Delete";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import { api, type Dataset } from "../api";
+import { errorText, useI18n } from "../i18n";
 
 type Props = { disabled: boolean; onError: (message: string) => void };
 
 export function DatasetsCard({ disabled, onError }: Props) {
+  const { t, lang } = useI18n();
   const [items, setItems] = useState<Dataset[]>([]);
 
   const refresh = async () => {
@@ -16,15 +18,13 @@ export function DatasetsCard({ disabled, onError }: Props) {
       const res = await api.listDatasets();
       setItems(res.items);
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     }
   };
 
   useEffect(() => {
     refresh();
-    const timer = setInterval(() => {
-      refresh();
-    }, 2000);
+    const timer = setInterval(refresh, 2000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -34,7 +34,7 @@ export function DatasetsCard({ disabled, onError }: Props) {
       await api.downloadDataset(id);
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     }
   };
 
@@ -43,13 +43,13 @@ export function DatasetsCard({ disabled, onError }: Props) {
       await api.deleteDataset(id);
       await refresh();
     } catch (e) {
-      onError((e as Error).message);
+      onError(errorText(t, e));
     }
   };
 
   return (
     <Card>
-      <CardHeader avatar={<StorageIcon color="primary" />} title="3. Negativní datasety" subheader="Řeč a hluk, na které model nemá reagovat" />
+      <CardHeader avatar={<StorageIcon color="primary" />} title={t("ds.title")} subheader={t("ds.subtitle")} />
       <CardContent>
         <Stack spacing={2}>
           {items.map((ds) => {
@@ -63,25 +63,25 @@ export function DatasetsCard({ disabled, onError }: Props) {
                     <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
                       <Typography variant="subtitle2">{ds.title}</Typography>
                       <Chip size="small" label={`${ds.size_mb} MB`} variant="outlined" />
-                      {ds.required && <Chip size="small" label="základní" color="primary" variant="outlined" />}
-                      {ds.installed && <Chip size="small" icon={<CheckCircleIcon />} label="staženo" color="success" />}
+                      {ds.required && <Chip size="small" label={t("ds.base")} color="primary" variant="outlined" />}
+                      {ds.installed && <Chip size="small" icon={<CheckCircleIcon />} label={t("ds.installed")} color="success" />}
                     </Stack>
                     <Typography variant="body2" color="text.secondary">
-                      {ds.description}
+                      {ds.description[lang] ?? ds.description.en}
                     </Typography>
                     {dl?.state === "error" && (
                       <Typography variant="body2" color="error">
-                        Chyba stahování: {dl.error}
+                        {t("ds.error", { err: dl.error ?? "" })}
                       </Typography>
                     )}
                   </Box>
                   {!ds.installed && (
                     <Button size="small" variant="outlined" startIcon={<DownloadIcon />} onClick={() => download(ds.id)} disabled={disabled || !!active}>
-                      {active ? (dl?.state === "extracting" ? "Rozbaluji…" : "Stahuji…") : "Stáhnout"}
+                      {active ? (dl?.state === "extracting" ? t("ds.extracting") : t("ds.downloading")) : t("ds.download")}
                     </Button>
                   )}
                   {ds.installed && (
-                    <Tooltip title="Smazat stažená data">
+                    <Tooltip title={t("ds.deleteTooltip")}>
                       <span>
                         <IconButton size="small" onClick={() => remove(ds.id)} disabled={disabled}>
                           <DeleteIcon />
@@ -95,8 +95,7 @@ export function DatasetsCard({ disabled, onError }: Props) {
             );
           })}
           <Typography variant="caption" color="text.secondary">
-            Kromě datasetů se při trénování automaticky generuje syntetický šum (bílý, růžový, hnědý, brum) a dlouhý „ambientní“ záznam pro odhad
-            falešných aktivací za hodinu. Vlastní negativní nahrávky z kroku 2 se přidávají také.
+            {t("ds.note")}
           </Typography>
         </Stack>
       </CardContent>
