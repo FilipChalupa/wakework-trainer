@@ -92,7 +92,7 @@ function Main() {
             </Typography>
           </Box>
           {project && (
-            <Typography variant="subtitle1" fontWeight={600} color="primary" sx={{ mr: 2, display: { xs: "none", md: "block" } }}>
+            <Typography variant="subtitle1" fontWeight={600} color="primary" sx={{ mr: 2, display: { xs: "none", lg: "block" } }}>
               „{project.wake_word}“
             </Typography>
           )}

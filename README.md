@@ -23,12 +23,22 @@ and testing the result live in the browser. The output `.tflite` + manifest work
   model with the same micro-frontend and sliding-window average as ESPHome. Evaluate the model on all stored recordings
   to see which samples are missed and which negatives trigger it.
 - **ESPHome manifest** – `probability_cutoff` is derived from the test-set ROC curve; tune it in the test card and copy it over.
-- **Multiple projects** – each wake word lives in its own project (recordings, runs, settings); switch in the header.
+- **Multiple projects** – each wake word lives in its own project (recordings, runs, settings); switch in the header,
+  export/import a whole project as a ZIP for backups or moving between machines.
 - **Shared recording link** – generate a link (`/contribute?token=…`) so family or colleagues can record samples for a
   project from their own device without logging in; they only see their own recordings.
+- **Recording modes** – tag samples as *far away*, *with background noise*, *whisper* or *loud*; the evaluation shows per-mode
+  results so you see where the model fails. Contributors get a per-person target and a QR code for the link.
+- **Real rooms and noise** – MIT room impulse responses (auto-downloaded) reverberate your samples during augmentation;
+  optional ESC-50 environmental sounds and FMA music serve as real background and extra negatives.
 - **Hard negatives** – word fragments and swapped halves of your recordings are used as extra negatives so similar words
   do not trigger the model (optional).
-- **Charts** – validation loss and recall/accuracy over steps, test-set ROC curve.
+- **Automatic threshold** – after training the model is run over your own recordings and `probability_cutoff` is chosen so
+  that ~95 % of the wake word samples pass while every negative recording stays below.
+- **Charts and comparison** – validation loss and recall/accuracy over steps, test-set ROC curve; pick two runs to compare
+  parameters, metrics and per-recording results side by side.
+- **Notifications** – browser notification when a run finishes, plus an optional webhook (e.g. Home Assistant) with a JSON summary.
+- **GPU indicator** – the header shows whether a GPU is visible to the container and whether the TensorFlow build can use it.
 - **Robust runs** – an interrupted run (container restart) is detected and can be resumed from its checkpoint; old runs
   are pruned automatically (`KEEP_JOBS`), heavy intermediate files are removed after a successful run.
 - **Export** – ZIP bundle with the `.tflite`, the ESPHome manifest, an example ESPHome YAML and the training log.
@@ -64,7 +74,23 @@ Open <http://localhost:8000>. Everything (recordings, datasets, feature cache, m
 **GPU is optional.** The model is tiny (~30 k parameters); the default 4,000 steps take minutes on a CPU. The first run
 additionally pre-computes spectrograms of the negative dataset once (~1–2 min, cached in `data/features_cache`).
 
-Optional Basic auth: set `APP_USER` / `APP_PASSWORD` (see `.env.example`).
+Optional Basic auth: set `APP_USER` / `APP_PASSWORD` (see `.env.example`). `PUBLIC_URL` is used in webhook payloads,
+`WEBHOOK_URL` is a global fallback for the per-project webhook.
+
+### Coolify / Proxmox LXC with a GPU
+
+`docker-compose.coolify.yml` is a single-file compose for Coolify's *Docker Compose* build pack with NVIDIA GPU reservation.
+For a Coolify instance inside a Proxmox LXC you need, in this order:
+
+1. NVIDIA driver on the Proxmox host (`nvidia-smi` works there).
+2. GPU devices passed into the LXC: in `/etc/pve/lxc/<id>.conf` add `lxc.cgroup2.devices.allow: c 195:* rwm`,
+   `c 509:* rwm` (check `ls -l /dev/nvidia*` for the major numbers) and `lxc.mount.entry` lines for `/dev/nvidia0`,
+   `/dev/nvidiactl`, `/dev/nvidia-uvm`, `/dev/nvidia-uvm-tools`, `/dev/nvidia-modeset`.
+3. Inside the LXC the **same driver version** installed with `--no-kernel-module`, then `nvidia-container-toolkit` and
+   `nvidia-ctk runtime configure --runtime=docker` for the Docker that Coolify uses. `docker run --rm --gpus all nvidia/cuda:12.5.0-base-ubuntu22.04 nvidia-smi` must work.
+4. In Coolify create a *Docker Compose* resource from this repository pointing at `docker-compose.coolify.yml`, set a domain
+   with HTTPS (needed for the microphone) and add `APP_PASSWORD`. The header chip shows *GPU: …* when everything is wired up;
+   without the GPU the same image still trains on the CPU.
 
 ## Workflow
 
@@ -97,7 +123,10 @@ Lower `probability_cutoff` if the word is hard to trigger; raise it on false act
 | GET / PUT | `/api/config` | Current project configuration (wake word, training parameters) |
 | GET / POST / DELETE | `/api/projects` · `/api/projects/{id}/select` · `/api/projects/{id}/share` | Projects and sharing links |
 | GET / POST | `/api/contribute/info` · `/api/contribute/recordings` (`?token=…&name=…`) | Contributor (record-only) access |
-| GET | `/api/recordings?kind=positive\|negative` | Recordings incl. waveform peaks and quality analysis |
+| GET | `/api/recordings?kind=positive\|negative` · `/api/recordings/contributors` | Recordings incl. waveform peaks, quality analysis, tags; per-contributor counts |
+| PUT | `/api/recordings/{kind}/{id}/tag` | Set the recording mode tag |
+| GET | `/api/system` | GPU / TensorFlow CUDA / CPU info, device used by the last training |
+| GET / POST | `/api/projects/{id}/export` · `/api/projects/import` | Project ZIP export / import |
 | POST | `/api/recordings` | Upload (multipart `file`, `kind`) → `/data/positive_samples` or `/data/negative_samples` |
 | GET | `/api/recordings/{kind}/{id}` | Play a WAV |
 | DELETE | `/api/recordings/{kind}/{id}` | Soft delete (trash), `POST …/restore` restores |

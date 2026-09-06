@@ -39,3 +39,29 @@ def test_interrupted_job_detected_after_restart(tmp_path):
     summary = job_summary(job_dir, running_job_id=None)
     assert summary["status"] == "interrupted" and summary["resumable"] is True
     assert job_summary(job_dir, running_job_id="20260101_000000_abc")["status"] == "running"
+
+
+def test_webhook_payload(tmp_path, monkeypatch):
+    """The webhook receives a JSON summary; network errors are swallowed (logged only)."""
+    import json
+
+    from app import training
+
+    job_dir = tmp_path / "20260101_000000_abc"
+    job_dir.mkdir()
+    (job_dir / "job.json").write_text(json.dumps({"job_id": "20260101_000000_abc", "wake_word": "hej", "slug": "hej"}))
+    calls = []
+    monkeypatch.setattr(training.requests, "post", lambda url, json, timeout: calls.append((url, json)) or type("R", (), {"status_code": 200})())
+    monkeypatch.setenv("WEBHOOK_URL", "http://hook.invalid/x")
+    monkeypatch.setenv("PUBLIC_URL", "https://trainer.example/")
+    training.manager._notify_webhook(job_dir, "done", None)
+    assert calls and calls[0][0] == "http://hook.invalid/x"
+    payload = calls[0][1]
+    assert payload["event"] == "training_finished" and payload["status"] == "done"
+    assert payload["model_url"] == "https://trainer.example/api/jobs/20260101_000000_abc/model"
+
+    def boom(*a, **k):
+        raise OSError("unreachable")
+
+    monkeypatch.setattr(training.requests, "post", boom)
+    training.manager._notify_webhook(job_dir, "failed", "x")  # must not raise

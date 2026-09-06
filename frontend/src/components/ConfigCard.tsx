@@ -197,17 +197,19 @@ function ShareSection({ project, onSaved, onError }: { project: Project; onSaved
         {t("share.help")} {t("share.https")}
       </Typography>
       {link ? (
-        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+        <Stack spacing={1}>
           <TextField size="small" value={link} fullWidth InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
-          <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy} sx={{ whiteSpace: "nowrap" }}>
-            {copied ? t("share.copied") : t("share.copy")}
-          </Button>
-          <Button startIcon={<QrCode2Icon />} onClick={() => setShowQr((v) => !v)} sx={{ whiteSpace: "nowrap" }} disabled={!qr}>
-            {t("share.qr")}
-          </Button>
-          <Button color="error" startIcon={<LinkOffIcon />} onClick={() => toggle(false)} disabled={busy} sx={{ whiteSpace: "nowrap" }}>
-            {t("share.disable")}
-          </Button>
+          <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
+            <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy}>
+              {copied ? t("share.copied") : t("share.copy")}
+            </Button>
+            <Button variant="outlined" startIcon={<QrCode2Icon />} onClick={() => setShowQr((v) => !v)} disabled={!qr}>
+              {t("share.qr")}
+            </Button>
+            <Button color="error" startIcon={<LinkOffIcon />} onClick={() => toggle(false)} disabled={busy}>
+              {t("share.disable")}
+            </Button>
+          </Stack>
         </Stack>
       ) : (
         <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => toggle(true)} disabled={busy}>
