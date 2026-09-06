@@ -14,7 +14,7 @@ import soundfile as sf
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from .audio import normalize_wav
+from .audio import normalize_wav, trim_edges
 from .config import Project, current_project, slugify
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
@@ -210,6 +210,9 @@ async def store_upload(file: UploadFile, kind: str, project: Project, contributo
         raise HTTPException(400, "Recording is too short")
     if duration > 15:
         raise HTTPException(400, "Recording is too long (max 15 s)")
+    wav, duration = trim_edges(wav)
+    if duration < 0.3:
+        raise HTTPException(400, {"code": "silent_recording", "message": "No speech detected in the recording"})
     suffix = f"__{slugify(contributor)[:24]}" if contributor else ""
     name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{suffix}.wav"
     path = target_dir / name

@@ -50,3 +50,25 @@ def test_synthetic_noise_and_ambient(tmp_path):
     clip = build_ambient_clip(files, seconds=3.0, rng=random.Random(1), noise=files)
     assert clip.shape[0] == 3 * SR
     assert np.abs(clip).max() <= 1.0
+
+
+def test_trim_edges_keeps_context_and_ignores_short_silence():
+    import io
+
+    import soundfile as sf
+
+    from app.audio import trim_edges
+
+    sr = 16000
+    t = np.arange(int(0.5 * sr)) / sr
+    tone = (0.5 * np.sin(2 * np.pi * 300 * t)).astype(np.float32)
+    long = np.concatenate([np.zeros(int(1.5 * sr), np.float32), tone, np.zeros(int(1.2 * sr), np.float32)])
+    buf = io.BytesIO()
+    sf.write(buf, long, sr, subtype="PCM_16", format="WAV")
+    out, duration = trim_edges(buf.getvalue())
+    assert 0.9 <= duration <= 1.1  # 0.5 s tone + 0.25 s context on both sides
+    short = np.concatenate([np.zeros(int(0.2 * sr), np.float32), tone, np.zeros(int(0.2 * sr), np.float32)])
+    buf = io.BytesIO()
+    sf.write(buf, short, sr, subtype="PCM_16", format="WAV")
+    out2, duration2 = trim_edges(buf.getvalue())
+    assert out2 == buf.getvalue() and abs(duration2 - 0.9) < 0.01

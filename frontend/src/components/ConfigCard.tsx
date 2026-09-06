@@ -32,7 +32,6 @@ const FIELDS: { key: keyof TrainingParams; step?: number; min?: number }[] = [
 export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Props) {
   const { t } = useI18n();
   const [wakeWord, setWakeWord] = useState(project.wake_word);
-  const [duration, setDuration] = useState(project.sample_duration_s);
   const [training, setTraining] = useState<TrainingParams>(project.training);
   const [webhook, setWebhook] = useState(project.webhook_url ?? "");
   const [target, setTarget] = useState(project.contributor_target ?? 10);
@@ -40,7 +39,6 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
 
   useEffect(() => {
     setWakeWord(project.wake_word);
-    setDuration(project.sample_duration_s);
     setTraining(project.training);
     setWebhook(project.webhook_url ?? "");
     setTarget(project.contributor_target ?? 10);
@@ -48,7 +46,6 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
 
   const dirty =
     wakeWord !== project.wake_word ||
-    duration !== project.sample_duration_s ||
     webhook !== (project.webhook_url ?? "") ||
     target !== (project.contributor_target ?? 10) ||
     JSON.stringify(training) !== JSON.stringify(project.training);
@@ -56,7 +53,7 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
   const save = async () => {
     setSaving(true);
     try {
-      const res = await api.saveConfig({ wake_word: wakeWord, sample_duration_s: duration, training, webhook_url: webhook, contributor_target: target });
+      const res = await api.saveConfig({ wake_word: wakeWord, training, webhook_url: webhook, contributor_target: target });
       onSaved(res.project);
     } catch (e) {
       onError(errorText(t, e));
@@ -70,16 +67,7 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
       <CardHeader avatar={<TuneIcon color="primary" />} title={t("config.title")} subheader={t("config.subtitle")} />
       <CardContent>
         <Stack spacing={2}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-            <TextField label={t("config.wakeWord")} value={wakeWord} onChange={(e) => setWakeWord(e.target.value)} placeholder="chaloupko" fullWidth disabled={disabled} helperText={t("config.wakeWordHelp")} />
-            <TextField select label={t("config.sampleDuration")} value={duration} onChange={(e) => setDuration(Number(e.target.value))} disabled={disabled} sx={{ minWidth: 200 }} helperText={t("config.sampleDurationHelp")}>
-              {[1.5, 2, 2.5, 3].map((v) => (
-                <MenuItem key={v} value={v}>
-                  {v.toFixed(1)} s
-                </MenuItem>
-              ))}
-            </TextField>
-          </Stack>
+          <TextField label={t("config.wakeWord")} value={wakeWord} onChange={(e) => setWakeWord(e.target.value)} placeholder="chaloupko" fullWidth disabled={disabled} helperText={t("config.wakeWordHelp")} />
 
           <TextField
             select

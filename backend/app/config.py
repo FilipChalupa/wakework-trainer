@@ -94,7 +94,7 @@ def _default_settings(name: str, wake_word: str) -> dict[str, Any]:
     return {
         "name": name,
         "wake_word": wake_word,
-        "sample_duration_s": 2.0,
+        "sample_duration_s": 4.0,  # maximum recording length; recordings stop automatically after the word
         "training": dict(DEFAULT_TRAINING),
         "share_token": None,
         "model_token": None,
@@ -115,6 +115,8 @@ def load_settings(project: Project) -> dict[str, Any]:
     settings = _default_settings(project.id, stored.get("wake_word", project.id))
     settings.update({k: v for k, v in stored.items() if k != "training"})
     settings["training"].update(stored.get("training", {}))
+    if float(settings.get("sample_duration_s") or 0) < 3.0:  # older projects used a fixed 1.5-3 s clip length
+        settings["sample_duration_s"] = 4.0
     return settings
 
 

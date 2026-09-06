@@ -56,6 +56,38 @@ def normalize_wav(raw: bytes) -> tuple[bytes, float]:
     return converted, float(info.frames) / info.samplerate
 
 
+def trim_edges(wav: bytes, keep_ms: int = 250, min_silence_ms: int = 350, threshold_db: float = -32.0) -> tuple[bytes, float]:
+    """Removes long silence at the start/end of a recording (keeps ``keep_ms`` of context around the speech).
+
+    Recordings now stop automatically after the word, but the beginning often contains a second of silence
+    while the person gets ready; trimming keeps the dataset compact and the quality checks meaningful.
+    """
+    data, sr = sf.read(io.BytesIO(wav), dtype="float32", always_2d=True)
+    audio = data[:, 0]
+    n = audio.shape[0]
+    frame = max(1, sr // 100)
+    if n < frame * 10:
+        return wav, n / sr
+    frames = audio[: (n // frame) * frame].reshape(-1, frame)
+    rms = np.sqrt((frames ** 2).mean(axis=1) + 1e-12)
+    peak = rms.max()
+    if peak < 1e-3:
+        return wav, n / sr
+    active = np.where(rms > max(peak * 10 ** (threshold_db / 20.0), 0.004))[0]
+    if active.size == 0:
+        return wav, n / sr
+    keep = int(sr * keep_ms / 1000)
+    start = max(0, int(active[0]) * frame - keep)
+    end = min(n, (int(active[-1]) + 1) * frame + keep)
+    min_silence = int(sr * min_silence_ms / 1000)
+    if start < min_silence and n - end < min_silence:
+        return wav, n / sr
+    trimmed = audio[start:end]
+    out = io.BytesIO()
+    sf.write(out, trimmed, sr, subtype="PCM_16", format="WAV")
+    return out.getvalue(), trimmed.shape[0] / sr
+
+
 def wav_duration(path) -> float:
     try:
         info = sf.info(str(path))

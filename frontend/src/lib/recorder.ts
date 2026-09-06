@@ -61,30 +61,61 @@ export class Recorder {
       .map((d, i) => ({ deviceId: d.deviceId, label: d.label || `Mikrofon ${i + 1}` }));
   }
 
-  async record(durationS: number, onLevel?: LevelCallback): Promise<{ wav: Blob; samples: Float32Array; sampleRate: number }> {
+  /**
+   * Records until the speaker has finished: stops ~0.6 s after speech ends, at ``maxSeconds`` at the latest,
+   * or when ``stop()`` (returned via onStart) is called. Speech detection adapts to the noise floor measured at the start.
+   */
+  async record(
+    maxSeconds: number,
+    onLevel?: LevelCallback,
+    options: { silenceMs?: number; minSeconds?: number; onStart?: (stop: () => void) => void } = {},
+  ): Promise<{ wav: Blob; samples: Float32Array; sampleRate: number }> {
     await this.init(this.deviceId);
     const context = this.context!;
     if (context.state === "suspended") await context.resume();
     const source = context.createMediaStreamSource(this.stream!);
     const chunks: Float32Array[] = [];
-    const targetFrames = Math.ceil(durationS * context.sampleRate);
+    const maxFrames = Math.ceil(maxSeconds * context.sampleRate);
+    const silenceFrames = Math.ceil(((options.silenceMs ?? 600) / 1000) * context.sampleRate);
+    const minFrames = Math.ceil((options.minSeconds ?? 0.7) * context.sampleRate);
     let collected = 0;
+    let speechSeen = false;
+    let silentFrames = 0;
+    let noiseFloor = 0.003;
+    let floorSamples = 0;
+    let stopRequested = false;
     const started = performance.now();
+    options.onStart?.(() => {
+      stopRequested = true;
+    });
 
     const push = (data: Float32Array) => {
-      if (collected >= targetFrames) return;
+      if (collected >= maxFrames || stopRequested) return;
       chunks.push(data);
       collected += data.length;
-      if (onLevel) {
-        let sum = 0;
-        let peak = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = data[i];
-          sum += v * v;
-          if (Math.abs(v) > peak) peak = Math.abs(v);
-        }
-        onLevel({ rms: Math.sqrt(sum / data.length), peak, elapsed: (performance.now() - started) / 1000 });
+      let sum = 0;
+      let peak = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = data[i];
+        sum += v * v;
+        if (Math.abs(v) > peak) peak = Math.abs(v);
       }
+      const rms = Math.sqrt(sum / data.length);
+      // noise floor from the first ~150 ms (before the speaker starts), then track quiet chunks slowly
+      if (floorSamples < context.sampleRate * 0.15) {
+        noiseFloor = Math.max(noiseFloor, rms);
+        floorSamples += data.length;
+      } else if (rms < noiseFloor * 1.5) {
+        noiseFloor = noiseFloor * 0.98 + rms * 0.02;
+      }
+      const speechThreshold = Math.max(0.012, noiseFloor * 3.5);
+      if (rms > speechThreshold) {
+        speechSeen = true;
+        silentFrames = 0;
+      } else if (speechSeen) {
+        silentFrames += data.length;
+      }
+      if (onLevel) onLevel({ rms, peak, elapsed: (performance.now() - started) / 1000 });
     };
 
     let cleanup: () => void;
@@ -115,24 +146,26 @@ export class Recorder {
 
     await new Promise<void>((resolve) => {
       const tick = () => {
-        if (collected >= targetFrames) resolve();
+        const finished = speechSeen && silentFrames >= silenceFrames && collected >= minFrames;
+        if (collected >= maxFrames || finished || (stopRequested && collected >= minFrames)) resolve();
         else setTimeout(tick, 30);
       };
       tick();
     });
     cleanup();
 
-    const merged = new Float32Array(targetFrames);
+    const total = Math.min(collected, maxFrames);
+    const merged = new Float32Array(total);
     let offset = 0;
     for (const chunk of chunks) {
-      const remaining = targetFrames - offset;
+      const remaining = total - offset;
       if (remaining <= 0) break;
       merged.set(remaining >= chunk.length ? chunk : chunk.subarray(0, remaining), offset);
       offset += chunk.length;
     }
 
     const resampled = await resample(merged, context.sampleRate, TARGET_SAMPLE_RATE);
-    return { wav: encodeWav(resampled, TARGET_SAMPLE_RATE), samples: resampled, sampleRate: TARGET_SAMPLE_RATE };
+    return { wav: encodeWav(resampled, TARGET_SAMPLE_RATE), samples: resampled, sampleRate: TARGET_SAMPLE_RATE, speech: speechSeen } as { wav: Blob; samples: Float32Array; sampleRate: number };
   }
 
   /**

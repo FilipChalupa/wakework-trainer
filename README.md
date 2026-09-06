@@ -13,7 +13,8 @@ live in the browser. Two targets:
 
 ## Features
 
-- **Sample recording in the browser** – Web Audio API (AudioWorklet), fixed-length clips, WAV 16 kHz / mono / 16-bit PCM.
+- **Sample recording in the browser** – Web Audio API (AudioWorklet), recording stops by itself shortly after you finish
+  speaking (or on click, 4 s at most), leading/trailing silence is trimmed on upload; WAV 16 kHz / mono / 16-bit PCM.
   Series recording with countdown, playback after recording, play-all, microphone selection, quality checks
   (clipped start/end, clipping, too quiet, silence), mini waveforms, bulk delete with undo, drag & drop import,
   keyboard shortcuts (Space / R / Esc).
@@ -119,8 +120,8 @@ For a Coolify instance inside a Proxmox LXC you need, in this order:
 
 ## Workflow
 
-1. **Configure** – wake word (e.g. `chaloupko`), sample length, optionally training parameters (steps, learning rate, batch
-   size, augmentations per sample, model window, negative class weight).
+1. **Configure** – wake word (e.g. `chaloupko`), target platform, optionally training parameters (steps, learning rate,
+   batch size, augmentations per sample, model window, negative class weight).
 2. **Record** – 20–40 samples recommended, ideally several speakers, distances and intonations. Optionally record negative
    samples (other speech, similar words, room noise).
 3. **Datasets** – the base negative dataset downloads automatically before the first run; extra sets are optional.

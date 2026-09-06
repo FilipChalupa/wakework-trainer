@@ -86,6 +86,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const playAllRef = useRef(false);
   const busyRef = useRef(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const stopRecordingRef = useRef<(() => void) | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -182,10 +183,15 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       }
       setPhase("recording");
       setElapsed(0);
-      const { wav, samples } = await recorderRef.current.record(durationS, ({ rms, elapsed }) => {
-        setLevel(Math.min(1, rms * 6));
-        setElapsed(elapsed);
-      });
+      const { wav, samples } = await recorderRef.current.record(
+        durationS,
+        ({ rms, elapsed }) => {
+          setLevel(Math.min(1, rms * 6));
+          setElapsed(elapsed);
+        },
+        { onStart: (stop) => (stopRecordingRef.current = stop) },
+      );
+      stopRecordingRef.current = null;
       setLevel(0);
       setLastPeaks(waveformPeaks(samples));
       setPhase("uploading");
@@ -258,6 +264,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
         e.preventDefault();
         recordSingle();
       } else if (e.key === "Escape") {
+        stopRecordingRef.current?.();
         stopSeriesRef.current = true;
         playAllRef.current = false;
         setPlayAll(false);
@@ -325,7 +332,6 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const list = items[kind];
   const positiveCount = items.positive.length;
   const progress = Math.min(100, (positiveCount / RECOMMENDED) * 100);
-  const remaining = Math.max(0, durationS - elapsed);
   const problems = useMemo(() => list.filter((r) => r.quality.issues.length > 0).length, [list]);
   const hint = VARIATION_HINTS[(kind === "positive" ? positiveCount : items.negative.length) % VARIATION_HINTS.length];
   const busy = phase !== "idle";
@@ -354,7 +360,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       <CardHeader
         avatar={<GraphicEqIcon color="primary" />}
         title={title ?? t("rec.title")}
-        subheader={t("rec.subtitle", { s: durationS.toFixed(1) })}
+        subheader={t("rec.subtitle")}
         action={
           <Chip
             color={positiveCount >= 20 ? "success" : "default"}
@@ -393,8 +399,8 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                 sx={{ color: phase === "recording" ? theme.palette.error.main : theme.palette.divider, position: "absolute", inset: 0 }}
               />
               <IconButton
-                onClick={series ? stopSeries : recordSingle}
-                disabled={disabled || (busy && !series)}
+                onClick={phase === "recording" ? () => stopRecordingRef.current?.() : series ? stopSeries : recordSingle}
+                disabled={disabled || (busy && !series && phase !== "recording")}
                 sx={{
                   width: 120,
                   height: 120,
@@ -408,7 +414,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                   fontWeight: 700,
                 }}
               >
-                {phase === "countdown" ? countdown : phase === "uploading" ? <CircularProgress size={36} color="inherit" /> : series ? <StopIcon sx={{ fontSize: 48 }} /> : <MicIcon sx={{ fontSize: 52 }} />}
+                {phase === "countdown" ? countdown : phase === "uploading" ? <CircularProgress size={36} color="inherit" /> : phase === "recording" || series ? <StopIcon sx={{ fontSize: 48 }} /> : <MicIcon sx={{ fontSize: 52 }} />}
               </IconButton>
             </Box>
             <Box sx={{ flex: 1, width: "100%" }}>
@@ -416,11 +422,11 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                 {phase === "idle" && (kind === "positive" ? t("rec.idlePositive", { word: wakeWord, hint: tag === "normal" ? hint : t(`tag.hint.${tag}` as TKey) }) : t("rec.idleNegative"))}
                 {phase === "prepare" && t("rec.prepare")}
                 {phase === "countdown" && t("rec.countdown", { n: countdown })}
-                {phase === "recording" && t("rec.recording", { s: remaining.toFixed(1) })}
+                {phase === "recording" && t("rec.recording", { s: elapsed.toFixed(1) })}
                 {phase === "uploading" && t("rec.uploading")}
               </Typography>
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                {series ? t("rec.seriesStatus", { done: series.done, total: series.total }) : t("rec.instructions", { s: durationS.toFixed(1) })}
+                {series ? t("rec.seriesStatus", { done: series.done, total: series.total }) : t("rec.instructions", { s: durationS.toFixed(0) })}
               </Typography>
               <LinearProgress variant="determinate" value={level * 100} color={level > 0.9 ? "error" : "success"} sx={{ height: 10, borderRadius: 5, mb: 1 }} />
               {lastPeaks && <Waveform peaks={lastPeaks} color={theme.palette.primary.main} height={40} />}
