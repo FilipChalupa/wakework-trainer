@@ -14,11 +14,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 from .audio import normalize_wav
-from .config import NEGATIVE_DIR, POSITIVE_DIR
+from .config import Project, current_project, slugify
 
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
-KINDS = {"positive": POSITIVE_DIR, "negative": NEGATIVE_DIR}
+KINDS = ("positive", "negative")
 SAFE_ID = re.compile(r"^[a-zA-Z0-9_\-]+\.wav$")
 TRASH_KEEP = 50
 PEAK_BUCKETS = 48
@@ -27,14 +27,14 @@ _analysis_cache: dict[tuple[str, int], dict] = {}
 _cache_lock = threading.Lock()
 
 
-def _dir(kind: str) -> Path:
+def _dir(kind: str, project: Project) -> Path:
     if kind not in KINDS:
         raise HTTPException(400, f"Unknown kind '{kind}'")
-    return KINDS[kind]
+    return project.ensure().sample_dir(kind)
 
 
-def _trash(kind: str) -> Path:
-    path = _dir(kind) / ".trash"
+def _trash(kind: str, project: Project) -> Path:
+    path = _dir(kind, project) / ".trash"
     path.mkdir(exist_ok=True)
     return path
 
@@ -106,7 +106,14 @@ def analyze(path: Path) -> dict:
     return result
 
 
-def _describe(kind: str, path: Path) -> dict:
+def contributor_of(filename: str) -> str | None:
+    stem = filename[:-4] if filename.endswith(".wav") else filename
+    if "__" in stem:
+        return stem.rsplit("__", 1)[1] or None
+    return None
+
+
+def describe(kind: str, path: Path, url_prefix: str = "/api/recordings") -> dict:
     stat = path.stat()
     info = analyze(path)
     return {
@@ -115,36 +122,27 @@ def _describe(kind: str, path: Path) -> dict:
         "duration": info["duration"],
         "size": stat.st_size,
         "created": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
-        "url": f"/api/recordings/{kind}/{path.name}",
+        "url": f"{url_prefix}/{kind}/{path.name}",
+        "contributor": contributor_of(path.name),
         "peaks": info["peaks"],
         "quality": info["quality"],
     }
 
 
-def list_recordings(kind: str) -> list[dict]:
-    files = sorted(_dir(kind).glob("*.wav"), key=lambda p: (p.stat().st_mtime, p.name))
-    return [_describe(kind, p) for p in files]
+def list_recordings(kind: str, project: Project, contributor: str | None = None, url_prefix: str = "/api/recordings") -> list[dict]:
+    files = sorted(_dir(kind, project).glob("*.wav"), key=lambda p: (p.stat().st_mtime, p.name))
+    if contributor is not None:
+        files = [f for f in files if contributor_of(f.name) == contributor]
+    return [describe(kind, f, url_prefix) for f in files]
 
 
-def _check_id(rec_id: str) -> None:
+def check_id(rec_id: str) -> None:
     if not SAFE_ID.match(rec_id):
         raise HTTPException(400, "Bad id")
 
 
-@router.get("")
-def get_recordings(kind: str = "positive"):
-    items = list_recordings(kind)
-    return {"kind": kind, "items": items, "count": len(items)}
-
-
-@router.get("/counts")
-def get_counts():
-    return {k: len(list(d.glob("*.wav"))) for k, d in KINDS.items()}
-
-
-@router.post("")
-async def upload_recording(file: UploadFile = File(...), kind: str = Form("positive")):
-    target_dir = _dir(kind)
+async def store_upload(file: UploadFile, kind: str, project: Project, contributor: str | None = None, url_prefix: str = "/api/recordings") -> dict:
+    target_dir = _dir(kind, project)
     raw = await file.read()
     if not raw:
         raise HTTPException(400, "Empty upload")
@@ -156,42 +154,72 @@ async def upload_recording(file: UploadFile = File(...), kind: str = Form("posit
         raise HTTPException(400, "Recording is too short")
     if duration > 15:
         raise HTTPException(400, "Recording is too long (max 15 s)")
-    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.wav"
+    suffix = f"__{slugify(contributor)[:24]}" if contributor else ""
+    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{suffix}.wav"
     path = target_dir / name
     path.write_bytes(wav)
-    return _describe(kind, path)
+    return describe(kind, path, url_prefix)
 
 
-@router.get("/{kind}/{rec_id}")
-def get_recording(kind: str, rec_id: str):
-    _check_id(rec_id)
-    path = _dir(kind) / rec_id
+def soft_delete(kind: str, rec_id: str, project: Project) -> None:
+    check_id(rec_id)
+    path = _dir(kind, project) / rec_id
+    if not path.exists():
+        raise HTTPException(404, "Not found")
+    trash = _trash(kind, project)
+    path.rename(trash / rec_id)
+    old = sorted(trash.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    for stale in old[:-TRASH_KEEP]:
+        stale.unlink(missing_ok=True)
+
+
+def restore(kind: str, rec_id: str, project: Project, url_prefix: str = "/api/recordings") -> dict:
+    check_id(rec_id)
+    src = _trash(kind, project) / rec_id
+    if not src.exists():
+        raise HTTPException(404, "Not in trash")
+    dst = _dir(kind, project) / rec_id
+    src.rename(dst)
+    return describe(kind, dst, url_prefix)
+
+
+def file_response(kind: str, rec_id: str, project: Project) -> FileResponse:
+    check_id(rec_id)
+    path = _dir(kind, project) / rec_id
     if not path.exists():
         raise HTTPException(404, "Not found")
     return FileResponse(path, media_type="audio/wav", filename=rec_id)
 
 
+# ----- routes (current project) ---------------------------------------------------
+@router.get("")
+def get_recordings(kind: str = "positive"):
+    items = list_recordings(kind, current_project())
+    return {"kind": kind, "items": items, "count": len(items)}
+
+
+@router.get("/counts")
+def get_counts():
+    project = current_project()
+    return {k: len(list(_dir(k, project).glob("*.wav"))) for k in KINDS}
+
+
+@router.post("")
+async def upload_recording(file: UploadFile = File(...), kind: str = Form("positive")):
+    return await store_upload(file, kind, current_project())
+
+
+@router.get("/{kind}/{rec_id}")
+def get_recording(kind: str, rec_id: str):
+    return file_response(kind, rec_id, current_project())
+
+
 @router.delete("/{kind}/{rec_id}")
 def delete_recording(kind: str, rec_id: str):
-    """Soft delete: the file is moved to a trash folder so it can be restored."""
-    _check_id(rec_id)
-    path = _dir(kind) / rec_id
-    if not path.exists():
-        raise HTTPException(404, "Not found")
-    trash = _trash(kind)
-    path.rename(trash / rec_id)
-    old = sorted(trash.glob("*.wav"), key=lambda p: p.stat().st_mtime)
-    for stale in old[:-TRASH_KEEP]:
-        stale.unlink(missing_ok=True)
+    soft_delete(kind, rec_id, current_project())
     return {"deleted": rec_id, "restorable": True}
 
 
 @router.post("/{kind}/{rec_id}/restore")
 def restore_recording(kind: str, rec_id: str):
-    _check_id(rec_id)
-    src = _trash(kind) / rec_id
-    if not src.exists():
-        raise HTTPException(404, "Not in trash")
-    dst = _dir(kind) / rec_id
-    src.rename(dst)
-    return _describe(kind, dst)
+    return restore(kind, rec_id, current_project())

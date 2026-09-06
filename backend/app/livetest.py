@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import time
 from collections import deque
 from pathlib import Path
@@ -15,9 +14,14 @@ import soundfile as sf
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from starlette.concurrency import run_in_threadpool
 
-from .config import JOBS_DIR, NEGATIVE_DIR, POSITIVE_DIR
+import threading
+
+from .config import Project, current_project
 
 router = APIRouter(prefix="/api", tags=["test"])
+
+_eval_lock = threading.Semaphore(1)  # one offline evaluation at a time
+_live_sessions = threading.Semaphore(2)  # at most two concurrent live tests
 
 FRAME_BYTES = 160 * 2  # 10 ms of 16 kHz int16 audio
 REFRACTORY_SLICES = 25  # like microWakeWord's ignore_slices_after_accept (~0.75 s)
@@ -78,12 +82,9 @@ class StreamingDetector:
 
 
 def _job_dir(job_id: str) -> Path:
-    if not re.match(r"^[A-Za-z0-9_\-]+$", job_id):
-        raise HTTPException(400, "Bad job id")
-    path = JOBS_DIR / job_id
-    if not path.is_dir():
-        raise HTTPException(404, "Job not found")
-    return path
+    from .training import find_job_dir
+
+    return find_job_dir(job_id)
 
 
 def _model_for_job(job_id: str) -> tuple[Path, dict[str, Any]]:
@@ -133,10 +134,14 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
     model, manifest = _model_for_job(job_id)
     if cutoff is None:
         cutoff = float(manifest.get("micro", {}).get("probability_cutoff", 0.97))
+    job = json.loads((_job_dir(job_id) / "job.json").read_text())
+    project = Project(job["project_id"]) if job.get("project_id") else current_project()
+    if not _eval_lock.acquire(blocking=False):
+        raise HTTPException(429, {"code": "busy", "message": "Another evaluation is running"})
 
     def run() -> dict[str, Any]:
         results = []
-        for kind, folder in (("positive", POSITIVE_DIR), ("negative", NEGATIVE_DIR)):
+        for kind, folder in (("positive", project.positive_dir), ("negative", project.negative_dir)):
             for path in sorted(folder.glob("*.wav")):
                 try:
                     res = evaluate_clip(model, _load_pcm16(path), cutoff, window)
@@ -157,7 +162,10 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
             },
         }
 
-    return await run_in_threadpool(run)
+    try:
+        return await run_in_threadpool(run)
+    finally:
+        _eval_lock.release()
 
 
 @router.websocket("/test/ws")
@@ -174,9 +182,14 @@ async def test_websocket(websocket: WebSocket):
     micro = manifest.get("micro", {})
     cutoff = float(params.get("cutoff") or micro.get("probability_cutoff", 0.97))
     window = int(params.get("window") or micro.get("sliding_window_size", 5))
+    if not _live_sessions.acquire(blocking=False):
+        await websocket.send_json({"type": "error", "message": "Too many live test sessions"})
+        await websocket.close()
+        return
     try:
         detector = await run_in_threadpool(StreamingDetector, model, cutoff, window)
     except Exception as exc:  # noqa: BLE001
+        _live_sessions.release()
         await websocket.send_json({"type": "error", "message": f"Could not load model: {exc}"})
         await websocket.close()
         return
@@ -210,3 +223,5 @@ async def test_websocket(websocket: WebSocket):
             await websocket.send_json({"type": "error", "message": str(exc)})
         except Exception:  # noqa: BLE001
             pass
+    finally:
+        _live_sessions.release()

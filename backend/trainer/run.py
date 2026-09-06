@@ -128,8 +128,8 @@ def spectrogram_generator(clips, augmenter, split: str, repeat: int, slide_frame
 
 
 # --------------------------------------------------------------------------------------
-def prepare_positives(job: dict, writer: FeatureWriter, features_dir: Path, background: list[str]) -> tuple[int, int]:
-    """Returns (effective clip_duration_ms, number of training clips)."""
+def prepare_positives(job: dict, writer: FeatureWriter, features_dir: Path, background: list[str]) -> tuple[int, WavClips]:
+    """Returns (effective clip_duration_ms, the loaded positive clips)."""
     training = job["training"]
     positive_paths = sorted(Path(job["positive_dir"]).glob("*.wav"))
     if len(positive_paths) < 3:
@@ -162,7 +162,7 @@ def prepare_positives(job: dict, writer: FeatureWriter, features_dir: Path, back
             expected,
             f"positive/{set_name}",
         )
-    return clip_ms, len(splits["train"])
+    return clip_ms, clips
 
 
 def list_speech_commands(job: dict) -> list[Path]:
@@ -172,6 +172,67 @@ def list_speech_commands(job: dict) -> list[Path]:
         for p in dataset_dir.rglob("*.wav")
         if "_background_noise_" not in p.parts and "__MACOSX" not in p.parts and not p.name.startswith("._")
     )
+
+
+def make_hard_negatives(audio: np.ndarray, rng: random.Random) -> list[np.ndarray]:
+    """Adversarial negatives derived from a wake word clip: partial words and swapped halves.
+
+    Teaches the model that only the complete word in the right order counts (reduces false accepts on
+    similar words / fragments). The clips must be trimmed to the word first.
+    """
+    n = audio.shape[0]
+    if n < int(0.3 * SR):
+        return []
+    variants = []
+    cut = int(n * rng.uniform(0.45, 0.6))
+    variants.append(audio[:cut])  # first part only
+    variants.append(audio[n - cut:])  # last part only
+    half = n // 2
+    variants.append(np.concatenate([audio[half:], audio[:half]]))  # halves swapped
+    return [v for v in variants if v.shape[0] >= int(0.15 * SR)]
+
+
+class HardNegativeClips(WavClips):
+    """WavClips-compatible source yielding hard negatives generated from the positive clips."""
+
+    def __init__(self, positives: WavClips, seed: int = 3):
+        super().__init__(positives.splits, trim=True)
+        self._positives = positives
+        self._rng = random.Random(seed)
+        self._generated: dict[str, list[np.ndarray]] = {}
+
+    def _variants(self, split: str) -> list[np.ndarray]:
+        if split not in self._generated:
+            out: list[np.ndarray] = []
+            for path in self._positives.splits[split]:
+                out.extend(make_hard_negatives(self._positives._load(path), self._rng))
+            self._generated[split] = out
+        return self._generated[split]
+
+    def audio_generator(self, split: str | None = None, repeat: int = 1):
+        for _ in range(repeat):
+            yield from self._variants(split or "train")
+
+    def get_random_clip(self) -> np.ndarray:
+        return self._rng.choice(self._variants("train"))
+
+
+def prepare_hard_negatives(job: dict, writer: FeatureWriter, features_dir: Path, clips: WavClips, clip_ms: int, background: list[str]) -> Path | None:
+    if not job["training"].get("hard_negatives", True):
+        return None
+    source = HardNegativeClips(clips)
+    reps = max(2, int(job["training"]["augmentations_per_sample"]) // 4)
+    duration_s = clip_ms / 1000.0 + 0.2
+    out_dir = features_dir / "hard_negatives"
+    total = 0
+    for set_name, split, repeat in (("training", "train", reps), ("validation", "validation", 1)):
+        count = len(source._variants(split)) * repeat
+        if count == 0:
+            continue
+        stage("preparing", "Preparing data", "hard_negatives", f"Hard negatives from partial wake words ({set_name})", {"set": set_name}, current=0, total=count)
+        augmenter = make_augmenter(duration_s, background, positive=True)
+        total += writer.write(out_dir / set_name / "hard_mmap", spectrogram_generator(source, augmenter, split, repeat, None), count, f"hard_negatives/{set_name}")
+    return out_dir if total else None
 
 
 def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
@@ -329,7 +390,7 @@ def summarize_roc(auc: float | None, points: list[dict]) -> tuple[dict | None, f
     clean = [p for p in points if p["faph"] <= 0.5] or [min(points, key=lambda p: p["faph"])]
     best = min(clean, key=lambda p: (p["frr"], -p["cutoff"]))
     cutoff = float(min(0.97, max(0.6, round(best["cutoff"] + 0.05, 2))))
-    summary = {"auc": auc, "cutoff": best["cutoff"], "frr": best["frr"], "faph": best["faph"], "manifest_cutoff": cutoff}
+    summary = {"auc": auc, "cutoff": best["cutoff"], "frr": best["frr"], "faph": best["faph"], "manifest_cutoff": cutoff, "points": points}
     return summary, cutoff
 
 
@@ -357,17 +418,30 @@ def write_manifest(job: dict, job_dir: Path, clip_ms: int, model_name: str, prob
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--job", required=True)
+    parser.add_argument("--resume", action="store_true", help="Reuse prepared features and checkpoints of an interrupted run")
     args = parser.parse_args()
     job = json.loads(Path(args.job).read_text())
     job_dir = Path(job["job_dir"])
     features_dir = job_dir / "features"
     started = time.time()
+    config_path = job_dir / "training_parameters.yaml"
+    resume = bool(args.resume and config_path.exists() and (features_dir / "positive").is_dir())
+    if args.resume and not resume:
+        log("Resume requested but prepared features are missing - starting from scratch")
 
     stage("preparing", "Preparing data", "init_tf", "Initialising TensorFlow and microWakeWord", status="preparing")
     import tensorflow as tf  # noqa: F401  (import early so failures show up immediately)
 
     gpus = tf.config.list_physical_devices("GPU")
     log(f"TensorFlow {tf.__version__}; GPU devices: {[g.name for g in gpus] or 'none (CPU training)'}")
+
+    if resume:
+        cfg = yaml.safe_load(config_path.read_text())
+        steps = int(job["training"]["training_steps"])
+        emit("training_config", total_steps=steps, eval_step_interval=int(cfg.get("eval_step_interval", 250)), clip_duration_ms=int(cfg.get("clip_duration_ms", 1500)))
+        log("Resuming interrupted run: reusing prepared features and the last checkpoint")
+        run_training_and_export(job, job_dir, features_dir, config_path, int(cfg.get("clip_duration_ms", 1500)), started, clean_train_dir=False)
+        return 0
 
     writer = FeatureWriter()
     noise_dir = Path(job["feature_cache_dir"]) / "synthetic_noise"
@@ -376,7 +450,8 @@ def main() -> int:
     if any(Path(job["negative_dir"]).glob("*.wav")):
         background_dirs.append(job["negative_dir"])
 
-    clip_ms, n_train = prepare_positives(job, writer, features_dir, background_dirs)
+    clip_ms, positive_clips = prepare_positives(job, writer, features_dir, background_dirs)
+    hard_dir = prepare_hard_negatives(job, writer, features_dir, positive_clips, clip_ms, background_dirs)
     speech_dir = prepare_speech_commands(job, writer)
     noise_feat_dir = prepare_noise_and_user_negatives(job, writer, features_dir, noise_files, clip_ms)
     ambient_dir = prepare_ambient(job, writer, features_dir, noise_files)
@@ -386,6 +461,8 @@ def main() -> int:
         {"features_dir": str(noise_feat_dir), "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "random", "type": "mmap"},
         {"features_dir": str(ambient_dir), "sampling_weight": 0.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "split", "type": "mmap"},
     ]
+    if hard_dir is not None:
+        feature_sets.append({"features_dir": str(hard_dir), "sampling_weight": 2.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "truncate_start", "type": "mmap"})
     if speech_dir is not None:
         feature_sets.append({"features_dir": str(speech_dir), "sampling_weight": 8.0, "penalty_weight": 1.0, "truth": False, "truncation_strategy": "random", "type": "mmap"})
     datasets_dir = Path(job["datasets_dir"])
@@ -398,10 +475,14 @@ def main() -> int:
 
     config_path = build_training_config(job, job_dir, feature_sets, clip_ms)
     log(f"Data preparation finished in {time.time() - started:.0f}s")
+    run_training_and_export(job, job_dir, features_dir, config_path, clip_ms, started, clean_train_dir=True)
+    return 0
 
+
+def run_training_and_export(job: dict, job_dir: Path, features_dir: Path, config_path: Path, clip_ms: int, started: float, clean_train_dir: bool) -> None:
     stage("training", "Training", "train_steps", f"Training the model ({job['training']['training_steps']} steps)", {"steps": int(job["training"]["training_steps"])}, status="training")
     train_dir = job_dir / "trained_model"
-    if train_dir.exists():
+    if clean_train_dir and train_dir.exists():
         shutil.rmtree(train_dir)
     run_microwakeword(config_path)
 
@@ -418,12 +499,21 @@ def main() -> int:
         log(f"Test set ROC: AUC {summary['auc']}; cutoff {summary['cutoff']:.2f} -> FRR {summary['frr'] * 100:.0f} %, FAPH {summary['faph']:.2f}")
     log(f"Manifest probability_cutoff set to {cutoff:.2f} (tune it in the JSON manifest if the word triggers too easily / too rarely)")
     write_manifest(job, job_dir, clip_ms, model_name, cutoff)
-    # free disk: the per-job feature mmaps are large and only needed during training
-    shutil.rmtree(features_dir, ignore_errors=True)
+    cleanup_job_dir(job_dir, features_dir, train_dir)
     kb = (job_dir / model_name).stat().st_size // 1024
     minutes = round((time.time() - started) / 60, 1)
     emit("done", message_key="model_ready", params={"name": model_name, "kb": kb, "minutes": minutes}, message=f"Model {model_name} ({kb} kB) ready in {minutes} min")
-    return 0
+
+
+def cleanup_job_dir(job_dir: Path, features_dir: Path, train_dir: Path) -> None:
+    """Frees disk space after a successful run: feature mmaps, checkpoints, TensorBoard logs and SavedModels
+    are only needed during training. The tflite folder (with ROC results) and the weights stay."""
+    shutil.rmtree(features_dir, ignore_errors=True)
+    for name in ("restore", "train", "logs", "stream_state_internal", "non_stream"):
+        shutil.rmtree(train_dir / name, ignore_errors=True)
+    for stale in train_dir.glob("*.weights.h5"):
+        if stale.name != "best_weights.weights.h5":
+            stale.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

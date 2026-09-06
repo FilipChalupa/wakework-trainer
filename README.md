@@ -1,6 +1,5 @@
 # Wake Word Trainer
 
-> 🇨🇿 Česká verze: [README.cs.md](README.cs.md)
 
 A self-contained web app for recording voice samples, training your own **wake word** model with
 [microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → quantised streaming TensorFlow Lite),

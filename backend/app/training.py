@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import threading
 import time
 import uuid
+import zipfile
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,10 +25,13 @@ from . import datasets
 from .config import (
     DATASETS_DIR,
     FEATURE_CACHE_DIR,
-    JOBS_DIR,
-    NEGATIVE_DIR,
-    POSITIVE_DIR,
-    load_project,
+    KEEP_JOBS,
+    PROJECTS_DIR,
+    Project,
+    current_project,
+    get_project,
+    list_projects,
+    load_settings,
     slugify,
 )
 from .recordings import list_recordings
@@ -49,12 +54,113 @@ RE_VALIDATION = re.compile(
 RE_BEST = re.compile(r"So far the best minimization quantity is ([\d.]+) with best maximization quantity of ([\d.]+)%")
 
 MAX_LOG_LINES = 600
+RUNNING = ("downloading", "preparing", "training", "converting")
+FINISHED = ("done", "failed", "cancelled")
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def parse_validation_line(line: str) -> dict[str, Any] | None:
+    m = RE_VALIDATION.search(line)
+    if not m:
+        return None
+    g = m.groups()
+    return {
+        "step": int(g[0]),
+        "recall_at_no_faph": float(g[1]) / 100.0,
+        "cutoff_for_no_faph": float(g[2]),
+        "accuracy": float(g[3]) / 100.0,
+        "recall": float(g[4]) / 100.0,
+        "precision": float(g[5]) / 100.0,
+        "ambient_false_positives": int(g[6]),
+        "false_positives_per_hour": float(g[7]),
+        "loss": float(g[8]),
+        "auc": float(g[9]),
+        "average_viable_recall": float(g[10]),
+    }
+
+
+def parse_minibatch_line(line: str, eval_interval: int) -> tuple[int, dict[str, float]] | None:
+    m = RE_MINIBATCH.search(line)
+    if not m:
+        return None
+    batch, acc, rec, prec, loss, mini = m.groups()
+    step = (int(batch) - 1) * max(1, eval_interval) + int(mini)
+    return step, {"accuracy": float(acc), "recall": float(rec), "precision": float(prec), "loss": float(loss)}
+
+
+# ----- job discovery ----------------------------------------------------------------
+def _read_json(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def find_job_dir(job_id: str) -> Path:
+    if not re.match(r"^[A-Za-z0-9_\-]+$", job_id or ""):
+        raise HTTPException(400, "Bad job id")
+    for entry in list_projects():
+        candidate = PROJECTS_DIR / entry["id"] / "jobs" / job_id
+        if candidate.is_dir():
+            return candidate
+    raise HTTPException(404, "Job not found")
+
+
+def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | None:
+    job = _read_json(job_dir / "job.json")
+    if not job:
+        return None
+    result = _read_json(job_dir / "result.json")
+    slug = job.get("slug", "wakeword")
+    model = job_dir / f"{slug}.tflite"
+    status = result.get("status")
+    if status is None:
+        status = "running" if running_job_id == job["job_id"] else "interrupted"
+    return {
+        "job_id": job["job_id"],
+        "project_id": job.get("project_id"),
+        "wake_word": job.get("wake_word"),
+        "slug": slug,
+        "created_at": job.get("created_at"),
+        "finished_at": result.get("finished_at"),
+        "status": status,
+        "positive_count": job.get("positive_count"),
+        "training": job.get("training"),
+        "final_metrics": result.get("final_metrics"),
+        "model_url": f"/api/jobs/{job['job_id']}/model" if model.exists() else None,
+        "manifest_url": f"/api/jobs/{job['job_id']}/manifest" if (job_dir / f"{slug}.json").exists() else None,
+        "export_url": f"/api/jobs/{job['job_id']}/export" if model.exists() else None,
+        "model_size": model.stat().st_size if model.exists() else None,
+        "resumable": status == "interrupted" and (job_dir / "features").is_dir(),
+    }
+
+
+def list_jobs(project: Project) -> list[dict[str, Any]]:
+    project.ensure()
+    running = manager.state.get("job_id") if manager.is_running() else None
+    jobs = []
+    for job_dir in sorted(project.jobs_dir.iterdir(), reverse=True):
+        if job_dir.is_dir():
+            summary = job_summary(job_dir, running)
+            if summary:
+                jobs.append(summary)
+    return jobs
+
+
+def prune_jobs(project: Project, keep: int = KEEP_JOBS) -> int:
+    """Deletes the oldest finished jobs beyond ``keep``. Returns the number removed."""
+    finished = [j for j in list_jobs(project) if j["status"] in FINISHED]
+    removed = 0
+    for job in finished[keep:]:
+        shutil.rmtree(project.jobs_dir / job["job_id"], ignore_errors=True)
+        removed += 1
+    return removed
+
+
+# ----- manager ------------------------------------------------------------------------
 class JobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -67,52 +173,12 @@ class JobManager:
         self._last_minibatch_emit = 0.0
         self._restore_last_job()
 
-    def _restore_last_job(self) -> None:
-        """After a restart, show the outcome of the most recent job instead of an empty idle state."""
-        try:
-            for job_dir in sorted(JOBS_DIR.iterdir(), reverse=True):
-                job_file, result_file = job_dir / "job.json", job_dir / "result.json"
-                if not (job_file.is_file() and result_file.is_file()):
-                    continue
-                job = json.loads(job_file.read_text())
-                result = json.loads(result_file.read_text())
-                status = result.get("status")
-                if status not in ("done", "failed", "cancelled"):
-                    continue
-                model = job_dir / f"{job.get('slug', 'wakeword')}.tflite"
-                manifest = job_dir / f"{job.get('slug', 'wakeword')}.json"
-                total = int(job.get("training", {}).get("training_steps", 0))
-                self.state.update({
-                    "status": status,
-                    "job_id": job["job_id"],
-                    "wake_word": job.get("wake_word"),
-                    "stage": {"done": "Done", "failed": "Error", "cancelled": "Cancelled"}[status],
-                    "stage_key": status,
-                    "progress": {"current": total if status == "done" else 0, "total": total},
-                    "step": total if status == "done" else 0,
-                    "total_steps": total,
-                    "validation": result.get("validation") or [],
-                    "best": result.get("best"),
-                    "final_metrics": result.get("final_metrics"),
-                    "error": result.get("error"),
-                    "model_url": f"/api/jobs/{job['job_id']}/model" if model.exists() else None,
-                    "manifest_url": f"/api/jobs/{job['job_id']}/manifest" if manifest.exists() else None,
-                    "started_at": job.get("created_at"),
-                    "finished_at": result.get("finished_at"),
-                })
-                log_file = job_dir / "train.log"
-                if log_file.is_file():
-                    self.log.extend(log_file.read_text().splitlines()[-MAX_LOG_LINES:])
-                return
-        except Exception:  # noqa: BLE001  (best effort only)
-            pass
-
-    # ----- state helpers -------------------------------------------------
     @staticmethod
     def _idle_state() -> dict[str, Any]:
         return {
-            "status": "idle",  # idle | downloading | preparing | training | converting | done | failed | cancelled
+            "status": "idle",  # idle | downloading | preparing | training | converting | done | failed | cancelled | interrupted
             "job_id": None,
+            "project_id": None,
             "wake_word": None,
             "stage": None,
             "stage_key": None,
@@ -129,10 +195,63 @@ class JobManager:
             "final_metrics": None,
             "model_url": None,
             "manifest_url": None,
+            "export_url": None,
+            "resumable": False,
             "started_at": None,
             "finished_at": None,
             "error": None,
         }
+
+    def _restore_last_job(self) -> None:
+        """After a restart, show the outcome of the most recent job of the current project."""
+        try:
+            self.load_project_state(current_project())
+        except Exception:  # noqa: BLE001  (best effort only)
+            pass
+
+    def load_project_state(self, project: Project) -> None:
+        """Replaces the idle/finished state with the last job of ``project`` (no-op while running)."""
+        if self.is_running():
+            return
+        with self._lock:
+            self.state = self._idle_state()
+            self.state["project_id"] = project.id
+        self.log.clear()
+        jobs = list_jobs(project)
+        if not jobs:
+            self._publish("snapshot", self.snapshot())
+            return
+        job = jobs[0]
+        job_dir = project.jobs_dir / job["job_id"]
+        result = _read_json(job_dir / "result.json")
+        total = int((job.get("training") or {}).get("training_steps", 0))
+        status = job["status"]
+        stage = {"done": "Done", "failed": "Error", "cancelled": "Cancelled", "interrupted": "Interrupted"}.get(status, status)
+        with self._lock:
+            self.state.update({
+                "status": status,
+                "job_id": job["job_id"],
+                "wake_word": job.get("wake_word"),
+                "stage": stage,
+                "stage_key": status,
+                "progress": {"current": total if status == "done" else 0, "total": total},
+                "step": total if status == "done" else 0,
+                "total_steps": total,
+                "validation": result.get("validation") or [],
+                "best": result.get("best"),
+                "final_metrics": result.get("final_metrics"),
+                "error": result.get("error"),
+                "model_url": job["model_url"],
+                "manifest_url": job["manifest_url"],
+                "export_url": job["export_url"],
+                "resumable": job["resumable"],
+                "started_at": job.get("created_at"),
+                "finished_at": result.get("finished_at"),
+            })
+        log_file = job_dir / "train.log"
+        if log_file.is_file():
+            self.log.extend(log_file.read_text().splitlines()[-MAX_LOG_LINES:])
+        self._publish("snapshot", self.snapshot())
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -141,7 +260,7 @@ class JobManager:
         return snap
 
     def is_running(self) -> bool:
-        return self.state["status"] in ("downloading", "preparing", "training", "converting")
+        return self.state["status"] in RUNNING
 
     # ----- pub/sub ---------------------------------------------------------
     def subscribe(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
@@ -187,49 +306,66 @@ class JobManager:
     def start(self) -> dict[str, Any]:
         if self.is_running():
             raise HTTPException(409, {"code": "already_running", "message": "Training is already running"})
-        positives = list_recordings("positive")
+        project = current_project()
+        positives = list_recordings("positive", project)
         if len(positives) < 3:
             raise HTTPException(400, {"code": "too_few_samples", "message": "Record at least 3 wake word samples (20-40 recommended)."})
-        project = load_project()
+        settings = load_settings(project)
         job_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-        job_dir = JOBS_DIR / job_id
+        job_dir = project.jobs_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
-        slug = slugify(project["wake_word"])
         job = {
             "job_id": job_id,
-            "wake_word": project["wake_word"],
-            "slug": slug,
-            "training": project["training"],
-            "positive_dir": str(POSITIVE_DIR),
-            "negative_dir": str(NEGATIVE_DIR),
+            "project_id": project.id,
+            "wake_word": settings["wake_word"],
+            "slug": slugify(settings["wake_word"]),
+            "training": settings["training"],
+            "positive_dir": str(project.positive_dir),
+            "negative_dir": str(project.negative_dir),
             "datasets_dir": str(DATASETS_DIR),
             "feature_cache_dir": str(FEATURE_CACHE_DIR),
             "job_dir": str(job_dir),
             "positive_count": len(positives),
-            "negative_count": len(list_recordings("negative")),
+            "negative_count": len(list_recordings("negative", project)),
             "created_at": _now(),
         }
         (job_dir / "job.json").write_text(json.dumps(job, indent=2, ensure_ascii=False))
+        removed = prune_jobs(project)
+        self._launch(job, resume=False)
+        if removed:
+            self._log(f"Removed {removed} old training run(s) (KEEP_JOBS={KEEP_JOBS})")
+        return self.snapshot()
+
+    def resume(self) -> dict[str, Any]:
+        if self.is_running():
+            raise HTTPException(409, {"code": "already_running", "message": "Training is already running"})
+        job_id = self.state.get("job_id")
+        if self.state.get("status") != "interrupted" or not job_id:
+            raise HTTPException(409, {"code": "nothing_to_resume", "message": "No interrupted training run to resume"})
+        job = _read_json(find_job_dir(job_id) / "job.json")
+        if not job:
+            raise HTTPException(404, "Job not found")
+        self._launch(job, resume=True)
+        return self.snapshot()
+
+    def _launch(self, job: dict[str, Any], resume: bool) -> None:
         self.log.clear()
         self._cancel.clear()
         with self._lock:
             self.state = self._idle_state()
         self._update(
             status="downloading",
-            job_id=job_id,
-            wake_word=project["wake_word"],
+            job_id=job["job_id"],
+            project_id=job.get("project_id"),
+            wake_word=job["wake_word"],
             stage="Checking datasets",
             stage_key="checking_datasets",
-            message=None,
-            message_key=None,
-            message_params=None,
             started_at=_now(),
-            total_steps=int(project["training"]["training_steps"]),
-            eval_step_interval=int(project["training"]["eval_step_interval"]),
+            total_steps=int(job["training"]["training_steps"]),
+            eval_step_interval=int(job["training"]["eval_step_interval"]),
         )
-        self._thread = threading.Thread(target=self._run, args=(job,), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(job, resume), daemon=True)
         self._thread.start()
-        return self.snapshot()
 
     def cancel(self) -> dict[str, Any]:
         if not self.is_running():
@@ -240,7 +376,7 @@ class JobManager:
             proc.terminate()
         return self.snapshot()
 
-    def _run(self, job: dict[str, Any]) -> None:
+    def _run(self, job: dict[str, Any], resume: bool) -> None:
         job_dir = Path(job["job_dir"])
         try:
             self._ensure_datasets()
@@ -248,21 +384,12 @@ class JobManager:
                 raise InterruptedError
             self._update(status="preparing", stage="Preparing data", stage_key="preparing", progress={"current": 0, "total": 0})
             env = dict(os.environ)
-            env.update({
-                "PYTHONUNBUFFERED": "1",
-                "TF_CPP_MIN_LOG_LEVEL": "2",
-                "PYTHONPATH": str(BACKEND_ROOT),
-            })
+            env.update({"PYTHONUNBUFFERED": "1", "TF_CPP_MIN_LOG_LEVEL": "2", "PYTHONPATH": str(BACKEND_ROOT)})
             cmd = [sys.executable, "-m", "trainer.run", "--job", str(job_dir / "job.json")]
+            if resume:
+                cmd.append("--resume")
             self._log(f"$ {' '.join(cmd)}")
-            self._proc = subprocess.Popen(
-                cmd,
-                cwd=str(job_dir),
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                bufsize=0,
-            )
+            self._proc = subprocess.Popen(cmd, cwd=str(job_dir), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
             self._pump(self._proc)
             code = self._proc.wait()
             if self._cancel.is_set():
@@ -337,36 +464,16 @@ class JobManager:
                 return
             self._handle_event(ev)
             return
-        m = RE_MINIBATCH.search(line)
-        if m:
-            batch, acc, rec, prec, loss, mini = m.groups()
-            interval = int(self.state["eval_step_interval"]) or 1
-            step = (int(batch) - 1) * interval + int(mini)
+        parsed = parse_minibatch_line(line, int(self.state["eval_step_interval"]) or 1)
+        if parsed:
+            step, metrics = parsed
             now = time.time()
-            if now - self._last_minibatch_emit > 0.25 or int(mini) == 0:
+            if now - self._last_minibatch_emit > 0.25 or step % (int(self.state["eval_step_interval"]) or 1) == 0:
                 self._last_minibatch_emit = now
-                self._update(
-                    step=step,
-                    train_metrics={"accuracy": float(acc), "recall": float(rec), "precision": float(prec), "loss": float(loss)},
-                    progress={"current": step, "total": int(self.state["total_steps"])},
-                )
+                self._update(step=step, train_metrics=metrics, progress={"current": step, "total": int(self.state["total_steps"])})
             return
-        m = RE_VALIDATION.search(line)
-        if m:
-            g = m.groups()
-            entry = {
-                "step": int(g[0]),
-                "recall_at_no_faph": float(g[1]) / 100.0,
-                "cutoff_for_no_faph": float(g[2]),
-                "accuracy": float(g[3]) / 100.0,
-                "recall": float(g[4]) / 100.0,
-                "precision": float(g[5]) / 100.0,
-                "ambient_false_positives": int(g[6]),
-                "false_positives_per_hour": float(g[7]),
-                "loss": float(g[8]),
-                "auc": float(g[9]),
-                "average_viable_recall": float(g[10]),
-            }
+        entry = parse_validation_line(line)
+        if entry:
             with self._lock:
                 self.state["validation"].append(entry)
             self._publish("state", {"validation": self.state["validation"]})
@@ -375,11 +482,6 @@ class JobManager:
         m = RE_BEST.search(line)
         if m:
             self._update(best={"minimization": float(m.group(1)), "maximization": float(m.group(2)) / 100.0})
-            self._log(line)
-            return
-        if RE_TRAIN_STEP.search(line):
-            self._log(line)
-            return
         self._log(line)
 
     def _handle_event(self, ev: dict[str, Any]) -> None:
@@ -423,6 +525,7 @@ class JobManager:
             progress={"current": self.state["total_steps"], "total": self.state["total_steps"]},
             model_url=f"/api/jobs/{job['job_id']}/model",
             manifest_url=f"/api/jobs/{job['job_id']}/manifest" if manifest.exists() else None,
+            export_url=f"/api/jobs/{job['job_id']}/export",
             finished_at=_now(),
         )
         self._write_result(job_dir, "done")
@@ -443,58 +546,15 @@ class JobManager:
 manager = JobManager()
 
 
-# ----- jobs listing ---------------------------------------------------------
-def list_jobs() -> list[dict[str, Any]]:
-    jobs = []
-    for job_dir in sorted(JOBS_DIR.iterdir(), reverse=True):
-        job_file = job_dir / "job.json"
-        if not job_file.is_file():
-            continue
-        try:
-            job = json.loads(job_file.read_text())
-        except json.JSONDecodeError:
-            continue
-        result = {}
-        result_file = job_dir / "result.json"
-        if result_file.exists():
-            try:
-                result = json.loads(result_file.read_text())
-            except json.JSONDecodeError:
-                result = {}
-        model = job_dir / f"{job.get('slug', 'wakeword')}.tflite"
-        status = result.get("status")
-        if status is None:
-            status = "running" if manager.state.get("job_id") == job["job_id"] and manager.is_running() else "failed"
-        jobs.append({
-            "job_id": job["job_id"],
-            "wake_word": job.get("wake_word"),
-            "slug": job.get("slug"),
-            "created_at": job.get("created_at"),
-            "finished_at": result.get("finished_at"),
-            "status": status,
-            "positive_count": job.get("positive_count"),
-            "training": job.get("training"),
-            "final_metrics": result.get("final_metrics"),
-            "model_url": f"/api/jobs/{job['job_id']}/model" if model.exists() else None,
-            "manifest_url": f"/api/jobs/{job['job_id']}/manifest" if (job_dir / f"{job.get('slug', 'wakeword')}.json").exists() else None,
-            "model_size": model.stat().st_size if model.exists() else None,
-        })
-    return jobs
-
-
-def _job_dir(job_id: str) -> Path:
-    if not re.match(r"^[A-Za-z0-9_\-]+$", job_id):
-        raise HTTPException(400, "Bad job id")
-    path = JOBS_DIR / job_id
-    if not path.is_dir():
-        raise HTTPException(404, "Job not found")
-    return path
-
-
 # ----- routes ---------------------------------------------------------------
 @router.post("/train")
 def start_training():
     return manager.start()
+
+
+@router.post("/train/resume")
+def resume_training():
+    return manager.resume()
 
 
 @router.post("/train/cancel")
@@ -525,11 +585,7 @@ async def training_status_stream():
         finally:
             manager.unsubscribe(queue)
 
-    return StreamingResponse(
-        gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
-    )
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"})
 
 
 def _sse(event: str, data: Any) -> str:
@@ -538,7 +594,7 @@ def _sse(event: str, data: Any) -> str:
 
 @router.get("/train/model")
 def latest_model():
-    for job in list_jobs():
+    for job in list_jobs(current_project()):
         if job["status"] == "done" and job["model_url"]:
             return job_model(job["job_id"])
     raise HTTPException(404, "No trained model yet")
@@ -546,42 +602,149 @@ def latest_model():
 
 @router.get("/jobs")
 def get_jobs():
-    return {"items": list_jobs()}
+    return {"items": list_jobs(current_project())}
+
+
+def _job_file(job_id: str, suffix: str) -> tuple[Path, dict[str, Any]]:
+    job_dir = find_job_dir(job_id)
+    job = _read_json(job_dir / "job.json")
+    path = job_dir / f"{job.get('slug', 'wakeword')}{suffix}"
+    if not path.exists():
+        raise HTTPException(404, "File not found")
+    return path, job
 
 
 @router.get("/jobs/{job_id}/model")
 def job_model(job_id: str):
-    job_dir = _job_dir(job_id)
-    job = json.loads((job_dir / "job.json").read_text())
-    model = job_dir / f"{job['slug']}.tflite"
-    if not model.exists():
-        raise HTTPException(404, "Model not found")
-    return FileResponse(model, media_type="application/octet-stream", filename=model.name)
+    path, _ = _job_file(job_id, ".tflite")
+    return FileResponse(path, media_type="application/octet-stream", filename=path.name)
 
 
 @router.get("/jobs/{job_id}/manifest")
 def job_manifest(job_id: str):
-    job_dir = _job_dir(job_id)
-    job = json.loads((job_dir / "job.json").read_text())
-    manifest = job_dir / f"{job['slug']}.json"
-    if not manifest.exists():
-        raise HTTPException(404, "Manifest not found")
-    return FileResponse(manifest, media_type="application/json", filename=manifest.name)
+    path, _ = _job_file(job_id, ".json")
+    return FileResponse(path, media_type="application/json", filename=path.name)
 
 
 @router.get("/jobs/{job_id}/log")
 def job_log(job_id: str):
-    job_dir = _job_dir(job_id)
-    log = job_dir / "train.log"
+    log = find_job_dir(job_id) / "train.log"
     if not log.exists():
         raise HTTPException(404, "Log not found")
     return FileResponse(log, media_type="text/plain")
 
 
+def esphome_snippet(slug: str, wake_word: str) -> str:
+    return f"""# Example ESPHome configuration for the "{wake_word}" wake word.
+# Copy {slug}.tflite and {slug}.json next to this YAML (or point `model:` to a URL).
+micro_wake_word:
+  models:
+    - model: {slug}.json
+  on_wake_word_detected:
+    - logger.log:
+        format: "Wake word detected: %s"
+        args: ['x.c_str()']
+    # - voice_assistant.start:
+    #     wake_word: !lambda return x;
+
+# Tuning: if "{wake_word}" is hard to trigger, lower "probability_cutoff" in {slug}.json;
+# if it triggers falsely, raise it (0.5 - 0.99).
+"""
+
+
+@router.get("/jobs/{job_id}/export")
+def job_export(job_id: str):
+    model, job = _job_file(job_id, ".tflite")
+    job_dir = model.parent
+    slug = job.get("slug", "wakeword")
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(model, f"{slug}/{model.name}")
+        manifest = job_dir / f"{slug}.json"
+        if manifest.exists():
+            zf.write(manifest, f"{slug}/{manifest.name}")
+        zf.writestr(f"{slug}/esphome-example.yaml", esphome_snippet(slug, job.get("wake_word", slug)))
+        for extra in ("training_parameters.yaml", "result.json", "train.log"):
+            if (job_dir / extra).exists():
+                zf.write(job_dir / extra, f"{slug}/training/{extra}")
+        readme = (
+            f"Wake word model '{job.get('wake_word')}' trained with Wake Word Trainer / microWakeWord on {job.get('created_at')}.\n\n"
+            f"Files:\n  {slug}.tflite         quantised streaming TensorFlow Lite model\n  {slug}.json           ESPHome micro_wake_word manifest\n"
+            f"  esphome-example.yaml  example ESPHome configuration\n  training/             training parameters, metrics and log\n"
+        )
+        zf.writestr(f"{slug}/README.txt", readme)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{slug}-wakeword.zip"'})
+
+
 @router.delete("/jobs/{job_id}")
 def delete_job(job_id: str):
-    job_dir = _job_dir(job_id)
+    job_dir = find_job_dir(job_id)
     if manager.is_running() and manager.state.get("job_id") == job_id:
-        raise HTTPException(409, "Job is running")
+        raise HTTPException(409, {"code": "already_running", "message": "Job is running"})
     shutil.rmtree(job_dir)
+    if manager.state.get("job_id") == job_id:
+        manager.load_project_state(current_project())
     return {"deleted": job_id}
+
+
+# ----- projects -----------------------------------------------------------------
+@router.get("/projects")
+def get_projects():
+    return {"items": list_projects(), "current": current_project().id}
+
+
+@router.post("/projects")
+async def post_project(body: dict[str, Any]):
+    from .config import create_project, select_project
+
+    name = str(body.get("name", "")).strip()
+    if not name:
+        raise HTTPException(400, {"code": "name_required", "message": "Project name is required"})
+    if manager.is_running():
+        raise HTTPException(409, {"code": "already_running", "message": "Cannot switch projects while training"})
+    project = create_project(name, str(body.get("wake_word") or name))
+    select_project(project.id)
+    manager.load_project_state(project)
+    return {"items": list_projects(), "current": project.id}
+
+
+@router.post("/projects/{pid}/select")
+def post_select(pid: str):
+    from .config import select_project
+
+    if manager.is_running():
+        raise HTTPException(409, {"code": "already_running", "message": "Cannot switch projects while training"})
+    try:
+        project = select_project(pid)
+    except KeyError:
+        raise HTTPException(404, "Project not found") from None
+    manager.load_project_state(project)
+    return {"items": list_projects(), "current": project.id}
+
+
+@router.delete("/projects/{pid}")
+def delete_project_route(pid: str):
+    from .config import delete_project
+
+    if manager.is_running():
+        raise HTTPException(409, {"code": "already_running", "message": "Cannot delete projects while training"})
+    try:
+        get_project(pid)
+        delete_project(pid)
+    except KeyError:
+        raise HTTPException(404, "Project not found") from None
+    manager.load_project_state(current_project())
+    return {"items": list_projects(), "current": current_project().id}
+
+
+@router.post("/projects/{pid}/share")
+async def post_share(pid: str, body: dict[str, Any]):
+    from .config import set_share_token
+
+    try:
+        project = get_project(pid)
+    except KeyError:
+        raise HTTPException(404, "Project not found") from None
+    token = set_share_token(project, bool(body.get("enabled", True)))
+    return {"share_token": token}
