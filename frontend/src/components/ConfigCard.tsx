@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
-import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, CardHeader, MenuItem, Stack, TextField, Typography } from "@mui/material";
+import { Accordion, AccordionDetails, AccordionSummary, Box, Button, Card, CardContent, CardHeader, Divider, FormControlLabel, MenuItem, Stack, Switch, TextField, Typography } from "@mui/material";
+import ShareIcon from "@mui/icons-material/Share";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import LinkOffIcon from "@mui/icons-material/LinkOff";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import TuneIcon from "@mui/icons-material/Tune";
 import SaveIcon from "@mui/icons-material/Save";
@@ -87,6 +90,19 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
                   />
                 ))}
               </Box>
+              <FormControlLabel
+                sx={{ mt: 1 }}
+                control={<Switch checked={!!training.hard_negatives} onChange={(e) => setTraining({ ...training, hard_negatives: e.target.checked })} disabled={disabled} />}
+                label={
+                  <Box>
+                    <Typography variant="body2">{t("config.f.hard_negatives")}</Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {t("config.h.hard_negatives")}
+                    </Typography>
+                  </Box>
+                }
+              />
+              <br />
               <Button size="small" sx={{ mt: 1 }} onClick={() => setTraining({ ...defaults })} disabled={disabled}>
                 {t("config.resetDefaults")}
               </Button>
@@ -101,8 +117,68 @@ export function ConfigCard({ project, defaults, disabled, onSaved, onError }: Pr
               {dirty ? t("config.unsaved") : t("config.saved")}
             </Typography>
           </Stack>
+
+          <Divider />
+          <ShareSection project={project} onSaved={onSaved} onError={onError} />
         </Stack>
       </CardContent>
     </Card>
+  );
+}
+
+function ShareSection({ project, onSaved, onError }: { project: Project; onSaved: (p: Project) => void; onError: (m: string) => void }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const link = project.share_token ? `${location.origin}/contribute?token=${project.share_token}` : null;
+
+  const toggle = async (enabled: boolean) => {
+    setBusy(true);
+    try {
+      const res = await api.setShare(project.id, enabled);
+      onSaved({ ...project, share_token: res.share_token });
+    } catch (e) {
+      onError(errorText(t, e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      onError(link);
+    }
+  };
+
+  return (
+    <Box>
+      <Stack direction="row" spacing={1} alignItems="center">
+        <ShareIcon fontSize="small" color="primary" />
+        <Typography variant="subtitle2">{t("share.title")}</Typography>
+      </Stack>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, mb: 1 }}>
+        {t("share.help")} {t("share.https")}
+      </Typography>
+      {link ? (
+        <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ sm: "center" }}>
+          <TextField size="small" value={link} fullWidth InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
+          <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy} sx={{ whiteSpace: "nowrap" }}>
+            {copied ? t("share.copied") : t("share.copy")}
+          </Button>
+          <Button color="error" startIcon={<LinkOffIcon />} onClick={() => toggle(false)} disabled={busy} sx={{ whiteSpace: "nowrap" }}>
+            {t("share.disable")}
+          </Button>
+        </Stack>
+      ) : (
+        <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => toggle(true)} disabled={busy}>
+          {t("share.enable")}
+        </Button>
+      )}
+    </Box>
   );
 }

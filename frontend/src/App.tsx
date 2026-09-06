@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { Alert, AppBar, Box, Container, MenuItem, Select, Snackbar, Stack, Toolbar, Typography } from "@mui/material";
 import RecordVoiceOverIcon from "@mui/icons-material/RecordVoiceOver";
 import { AppThemeProvider } from "./theme";
-import { api, type Job, type Project, type TrainingParams } from "./api";
+import { api, type Job, type Project, type ProjectSummary, type TrainingParams } from "./api";
+import { ProjectSelector } from "./components/ProjectSelector";
+import { ContributePage } from "./ContributePage";
 import { ConfigCard } from "./components/ConfigCard";
 import { RecorderCard } from "./components/RecorderCard";
 import { DatasetsCard } from "./components/DatasetsCard";
@@ -16,7 +18,7 @@ export default function App() {
   return (
     <I18nProvider>
       <AppThemeProvider>
-        <Main />
+        {location.pathname.replace(/\/$/, "") === "/contribute" ? <ContributePage /> : <Main />}
       </AppThemeProvider>
     </I18nProvider>
   );
@@ -28,6 +30,9 @@ function Main() {
   const [defaults, setDefaults] = useState<TrainingParams | null>(null);
   const [counts, setCounts] = useState({ positive: 0, negative: 0 });
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [currentProject, setCurrentProject] = useState<string>("");
+  const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const { state, log, connected } = useTrainingStream();
 
@@ -52,9 +57,23 @@ function Main() {
         setDefaults(r.defaults);
       })
       .catch((e) => showError(errorText(t, e)));
+    api
+      .listProjects()
+      .then((r) => {
+        setProjects(r.items);
+        setCurrentProject(r.current);
+      })
+      .catch((e) => showError(errorText(t, e)));
     loadJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [reloadKey]);
+
+  const onProjectsChanged = (items: ProjectSummary[], current: string) => {
+    setProjects(items);
+    setCurrentProject(current);
+    setProject(null);
+    setReloadKey((k) => k + 1);
+  };
 
   const running = ["downloading", "preparing", "training", "converting"].includes(state.status);
 
@@ -72,9 +91,14 @@ function Main() {
             </Typography>
           </Box>
           {project && (
-            <Typography variant="subtitle1" fontWeight={600} color="primary" sx={{ mr: 2, display: { xs: "none", sm: "block" } }}>
+            <Typography variant="subtitle1" fontWeight={600} color="primary" sx={{ mr: 2, display: { xs: "none", md: "block" } }}>
               „{project.wake_word}“
             </Typography>
+          )}
+          {projects.length > 0 && (
+            <Box sx={{ mr: 1 }}>
+              <ProjectSelector projects={projects} current={currentProject} disabled={running} onChanged={onProjectsChanged} onError={showError} />
+            </Box>
           )}
           <Select size="small" value={lang} onChange={(e) => setLang(e.target.value as Lang)} aria-label={t("app.language")} sx={{ minWidth: 90 }}>
             <MenuItem value="cs">Čeština</MenuItem>
@@ -86,7 +110,7 @@ function Main() {
       <Container maxWidth="md" sx={{ py: 3 }}>
         <Stack spacing={3}>
           {project && defaults && <ConfigCard project={project} defaults={defaults} disabled={running} onSaved={setProject} onError={showError} />}
-          {project && <RecorderCard wakeWord={project.wake_word} durationS={project.sample_duration_s} disabled={running} onCountsChange={setCounts} onError={showError} />}
+          {project && <RecorderCard key={project.id} wakeWord={project.wake_word} durationS={project.sample_duration_s} disabled={running} onCountsChange={setCounts} onError={showError} />}
           <DatasetsCard disabled={running} onError={showError} />
           <TrainingCard state={state} log={log} connected={connected} positiveCount={counts.positive} wakeWord={project?.wake_word ?? ""} onError={showError} onFinished={loadJobs} />
           <JobsCard jobs={jobs} disabled={running} onChanged={loadJobs} onError={showError} />

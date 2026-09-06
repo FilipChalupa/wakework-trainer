@@ -7,7 +7,8 @@ import { errorText, useI18n, type TKey } from "../i18n";
 
 type Props = { jobs: Job[]; disabled: boolean; onChanged: () => void; onError: (message: string) => void };
 
-const COLORS: Record<string, "success" | "error" | "warning" | "info" | "default"> = { done: "success", failed: "error", cancelled: "warning", running: "info" };
+const COLORS: Record<string, "success" | "error" | "warning" | "info" | "default"> = { done: "success", failed: "error", cancelled: "warning", running: "info", interrupted: "warning" };
+const STATUSES = new Set(["done", "failed", "cancelled", "running", "interrupted"]);
 
 export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
   const { t } = useI18n();
@@ -58,7 +59,7 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                       )}
                     </TableCell>
                     <TableCell>
-                      <Chip size="small" label={t((`jobs.s.${job.status}` in { "jobs.s.done": 1, "jobs.s.failed": 1, "jobs.s.cancelled": 1, "jobs.s.running": 1 } ? `jobs.s.${job.status}` : "jobs.s.failed") as TKey)} color={COLORS[job.status] ?? "default"} />
+                      <Chip size="small" label={t((STATUSES.has(job.status) ? `jobs.s.${job.status}` : "jobs.s.failed") as TKey)} color={COLORS[job.status] ?? "default"} />
                     </TableCell>
                     <TableCell>{job.positive_count}</TableCell>
                     <TableCell>{job.training?.training_steps}</TableCell>
@@ -71,6 +72,11 @@ export function JobsCard({ jobs, disabled, onChanged, onError }: Props) {
                           {job.manifest_url && (
                             <Button size="small" href={job.manifest_url} download>
                               {t("jobs.manifest")}
+                            </Button>
+                          )}
+                          {job.export_url && (
+                            <Button size="small" href={job.export_url} download>
+                              {t("jobs.export")}
                             </Button>
                           )}
                         </Stack>

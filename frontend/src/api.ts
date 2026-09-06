@@ -1,4 +1,5 @@
 export type TrainingParams = {
+  hard_negatives: boolean;
   training_steps: number;
   learning_rate: number;
   batch_size: number;
@@ -10,10 +11,28 @@ export type TrainingParams = {
 };
 
 export type Project = {
+  id: string;
+  name: string;
   wake_word: string;
   sample_duration_s: number;
   training: TrainingParams;
+  share_token: string | null;
+  created_at?: string;
 };
+
+export type ProjectSummary = {
+  id: string;
+  name: string;
+  wake_word: string;
+  created_at: string | null;
+  positive_count: number;
+  negative_count: number;
+  jobs: number;
+  current: boolean;
+  shared: boolean;
+};
+
+export type ContributeInfo = { project: string; wake_word: string; sample_duration_s: number; positive_count: number };
 
 export type QualityIssue = "cut_start" | "cut_end" | "too_short" | "silent" | "clipping" | "too_quiet" | "unreadable";
 
@@ -24,6 +43,7 @@ export type Recording = {
   size: number;
   created: string;
   url: string;
+  contributor: string | null;
   peaks: number[];
   quality: {
     peak?: number;
@@ -58,11 +78,13 @@ export type ValidationEntry = {
   average_viable_recall: number;
 };
 
-export type FinalMetrics = { auc: number | null; cutoff: number; frr: number; faph: number; manifest_cutoff: number };
+export type RocPoint = { cutoff: number; frr: number; faph: number };
+export type FinalMetrics = { auc: number | null; cutoff: number; frr: number; faph: number; manifest_cutoff: number; points?: RocPoint[] };
 
 export type TrainingState = {
-  status: "idle" | "downloading" | "preparing" | "training" | "converting" | "done" | "failed" | "cancelled";
+  status: "idle" | "downloading" | "preparing" | "training" | "converting" | "done" | "failed" | "cancelled" | "interrupted";
   job_id: string | null;
+  project_id: string | null;
   wake_word: string | null;
   stage: string | null;
   stage_key: string | null;
@@ -79,6 +101,8 @@ export type TrainingState = {
   final_metrics: FinalMetrics | null;
   model_url: string | null;
   manifest_url: string | null;
+  export_url: string | null;
+  resumable: boolean;
   started_at: string | null;
   finished_at: string | null;
   error: string | null;
@@ -97,7 +121,16 @@ export type Job = {
   final_metrics: FinalMetrics | null;
   model_url: string | null;
   manifest_url: string | null;
+  export_url: string | null;
   model_size: number | null;
+  resumable: boolean;
+};
+
+export type RecordingsClient = {
+  listRecordings: (kind: string) => Promise<{ items: Recording[]; count: number }>;
+  uploadRecording: (kind: string, wav: Blob, filename?: string) => Promise<Recording>;
+  deleteRecording: (kind: string, id: string) => Promise<{ deleted: string }>;
+  restoreRecording: (kind: string, id: string) => Promise<Recording>;
 };
 
 export class ApiError extends Error {
@@ -166,6 +199,22 @@ export const api = {
   downloadDataset: (id: string) => request<unknown>(`/api/datasets/${id}/download`, { method: "POST" }),
   deleteDataset: (id: string) => request<unknown>(`/api/datasets/${id}`, { method: "DELETE" }),
   startTraining: () => request<TrainingState>("/api/train", { method: "POST" }),
+  resumeTraining: () => request<TrainingState>("/api/train/resume", { method: "POST" }),
+  listProjects: () => request<{ items: ProjectSummary[]; current: string }>("/api/projects"),
+  createProject: (name: string, wakeWord: string) =>
+    request<{ items: ProjectSummary[]; current: string }>("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, wake_word: wakeWord }),
+    }),
+  selectProject: (id: string) => request<{ items: ProjectSummary[]; current: string }>(`/api/projects/${id}/select`, { method: "POST" }),
+  deleteProject: (id: string) => request<{ items: ProjectSummary[]; current: string }>(`/api/projects/${id}`, { method: "DELETE" }),
+  setShare: (id: string, enabled: boolean) =>
+    request<{ share_token: string | null }>(`/api/projects/${id}/share`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
   cancelTraining: () => request<TrainingState>("/api/train/cancel", { method: "POST" }),
   trainingSnapshot: () => request<TrainingState>("/api/train"),
   listJobs: () => request<{ items: Job[] }>("/api/jobs"),
@@ -174,3 +223,20 @@ export const api = {
     request<Evaluation>(`/api/jobs/${jobId}/evaluate?cutoff=${cutoff}&window=${window}`, { method: "POST" }),
   deleteJob: (id: string) => request<unknown>(`/api/jobs/${id}`, { method: "DELETE" }),
 };
+
+/** API client for the contributor page (token based, no login). */
+export function contributeClient(token: string, name: string): RecordingsClient & { info: () => Promise<ContributeInfo> } {
+  const q = `token=${encodeURIComponent(token)}&name=${encodeURIComponent(name)}`;
+  return {
+    info: () => request<ContributeInfo>(`/api/contribute/info?token=${encodeURIComponent(token)}`),
+    listRecordings: (kind) => request(`/api/contribute/recordings?${q}&kind=${kind}`),
+    uploadRecording: (kind, wav, filename = "sample.wav") => {
+      const form = new FormData();
+      form.append("kind", kind);
+      form.append("file", wav, filename);
+      return request(`/api/contribute/recordings?${q}`, { method: "POST", body: form });
+    },
+    deleteRecording: (kind, id) => request(`/api/contribute/recordings/${kind}/${id}?${q}`, { method: "DELETE" }),
+    restoreRecording: (kind, id) => request(`/api/contribute/recordings/${kind}/${id}/restore?${q}`, { method: "POST" }),
+  };
+}

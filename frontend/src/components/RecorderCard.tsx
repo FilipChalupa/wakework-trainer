@@ -33,7 +33,7 @@ import RepeatIcon from "@mui/icons-material/Repeat";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
 import WarningAmberIcon from "@mui/icons-material/WarningAmber";
 import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
-import { api, type Recording } from "../api";
+import { api, type Recording, type RecordingsClient } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
 import { Recorder, waveformPeaks } from "../lib/recorder";
 
@@ -46,11 +46,16 @@ type Props = {
   disabled: boolean;
   onCountsChange: (counts: Record<Kind, number>) => void;
   onError: (message: string) => void;
+  /** API used for recordings – the contributor page passes a token based client. */
+  client?: RecordingsClient;
+  /** Contributor mode: no import, no bulk selection, simplified header. */
+  compact?: boolean;
+  title?: string;
 };
 
 type Phase = "idle" | "prepare" | "countdown" | "recording" | "uploading";
 
-export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, onError }: Props) {
+export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, onError, client = api, compact = false, title }: Props) {
   const theme = useTheme();
   const { t } = useI18n();
   const fail = useCallback((e: unknown) => onError(e instanceof Error && e.message === "mic_unsupported" ? t("rec.micUnsupported") : errorText(t, e)), [onError, t]);
@@ -83,13 +88,13 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
 
   const refresh = useCallback(async () => {
     try {
-      const [pos, neg] = await Promise.all([api.listRecordings("positive"), api.listRecordings("negative")]);
+      const [pos, neg] = await Promise.all([client.listRecordings("positive"), client.listRecordings("negative")]);
       setItems({ positive: pos.items, negative: neg.items });
       onCountsChange({ positive: pos.items.length, negative: neg.items.length });
     } catch (e) {
       fail(e);
     }
-  }, [onCountsChange, fail]);
+  }, [onCountsChange, fail, client]);
 
   useEffect(() => {
     refresh();
@@ -183,11 +188,11 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       setLevel(0);
       setLastPeaks(waveformPeaks(samples));
       setPhase("uploading");
-      const saved = await api.uploadRecording(targetKind, wav);
+      const saved = await client.uploadRecording(targetKind, wav);
       await refresh();
       return saved;
     },
-    [deviceId, devices.length, durationS, refresh],
+    [deviceId, devices.length, durationS, refresh, client],
   );
 
   const recordSingle = useCallback(async () => {
@@ -260,7 +265,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
     if (!ids.length) return;
     try {
       if (playing && ids.includes(playing.id)) stopPlayback();
-      for (const id of ids) await api.deleteRecording(targetKind, id);
+      for (const id of ids) await client.deleteRecording(targetKind, id);
       setSelected(new Set());
       setUndo({ kind: targetKind, ids });
       await refresh();
@@ -272,7 +277,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
   const restore = async () => {
     if (!undo) return;
     try {
-      for (const id of undo.ids) await api.restoreRecording(undo.kind, id);
+      for (const id of undo.ids) await client.restoreRecording(undo.kind, id);
       setUndo(null);
       await refresh();
     } catch (e) {
@@ -288,7 +293,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
     let failed = 0;
     for (let i = 0; i < list.length; i++) {
       try {
-        await api.uploadRecording(kind, list[i], list[i].name);
+        await client.uploadRecording(kind, list[i], list[i].name);
       } catch {
         failed += 1;
       }
@@ -325,13 +330,13 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
       onDrop={(e) => {
         e.preventDefault();
         setDragOver(false);
-        if (!disabled) importFiles(e.dataTransfer.files);
+        if (!disabled && !compact) importFiles(e.dataTransfer.files);
       }}
       sx={{ outline: dragOver ? `2px dashed ${theme.palette.primary.main}` : "none" }}
     >
       <CardHeader
         avatar={<GraphicEqIcon color="primary" />}
-        title={t("rec.title")}
+        title={title ?? t("rec.title")}
         subheader={t("rec.subtitle", { s: durationS.toFixed(1) })}
         action={
           <Chip
@@ -443,33 +448,33 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                 </MenuItem>
               ))}
             </TextField>
-            <input ref={fileInputRef} type="file" accept="audio/*,.wav" multiple hidden onChange={(e) => e.target.files && importFiles(e.target.files)} />
-            <Button variant="text" startIcon={<UploadFileIcon />} onClick={() => fileInputRef.current?.click()} disabled={disabled || !!importing}>
-              {importing ? t("rec.importing", { done: importing.done, total: importing.total }) : t("rec.import")}
-            </Button>
+            {!compact && <input ref={fileInputRef} type="file" accept="audio/*,.wav" multiple hidden onChange={(e) => e.target.files && importFiles(e.target.files)} />}
+            {!compact && (
+              <Button variant="text" startIcon={<UploadFileIcon />} onClick={() => fileInputRef.current?.click()} disabled={disabled || !!importing}>
+                {importing ? t("rec.importing", { done: importing.done, total: importing.total }) : t("rec.import")}
+              </Button>
+            )}
           </Stack>
 
           <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
             <Button size="small" startIcon={playAll ? <StopIcon /> : <PlaylistPlayIcon />} onClick={playEverything} disabled={list.length === 0}>
               {playAll ? t("rec.stop") : t("rec.playAll")}
             </Button>
-            <Button
-              size="small"
-              color="error"
-              startIcon={<DeleteSweepIcon />}
-              onClick={() => removeMany(kind, [...selected])}
-              disabled={disabled || selected.size === 0}
-            >
-              {t("rec.deleteSelected", { n: selected.size })}
-            </Button>
+            {!compact && (
+              <Button size="small" color="error" startIcon={<DeleteSweepIcon />} onClick={() => removeMany(kind, [...selected])} disabled={disabled || selected.size === 0}>
+                {t("rec.deleteSelected", { n: selected.size })}
+              </Button>
+            )}
             {problems > 0 && (
               <Tooltip title={t("rec.warningsTooltip")}>
                 <Chip icon={<WarningAmberIcon />} color="warning" variant="outlined" size="small" label={t("rec.withWarnings", { n: problems })} onClick={() => setSelected(new Set(list.filter((r) => r.quality.issues.length).map((r) => r.id)))} />
               </Tooltip>
             )}
-            <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-              {t("rec.dragHint")}
-            </Typography>
+            {!compact && (
+              <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
+                {t("rec.dragHint")}
+              </Typography>
+            )}
           </Stack>
 
           <Box sx={{ maxHeight: 360, overflow: "auto", border: 1, borderColor: "divider", borderRadius: 2 }}>
@@ -494,7 +499,7 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                     bgcolor: isPlaying ? "action.selected" : selected.has(rec.id) ? "action.hover" : "transparent",
                   }}
                 >
-                  <Checkbox size="small" checked={selected.has(rec.id)} onChange={() => toggleSelected(rec.id)} disabled={disabled} />
+                  {!compact && <Checkbox size="small" checked={selected.has(rec.id)} onChange={() => toggleSelected(rec.id)} disabled={disabled} />}
                   <IconButton size="small" onClick={() => togglePlay(rec)} color={isPlaying ? "primary" : "default"}>
                     {isPlaying ? <StopIcon /> : <PlayArrowIcon />}
                   </IconButton>
@@ -504,6 +509,9 @@ export function RecorderCard({ wakeWord, durationS, disabled, onCountsChange, on
                   <Box sx={{ flex: 1, minWidth: 0 }}>
                     <Typography variant="body2" noWrap>
                       #{list.length - idx} · {rec.duration.toFixed(2)} s · {new Date(rec.created).toLocaleTimeString()}
+                      {rec.contributor && !compact && (
+                        <Chip size="small" variant="outlined" label={t("rec.by", { name: rec.contributor })} sx={{ ml: 1, height: 18, fontSize: 11 }} />
+                      )}
                     </Typography>
                     <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
                       {rec.quality.issues.map((issue) => (

@@ -6,8 +6,11 @@ import StopIcon from "@mui/icons-material/Stop";
 import DownloadIcon from "@mui/icons-material/Download";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import RestartAltIcon from "@mui/icons-material/RestartAlt";
+import ArchiveIcon from "@mui/icons-material/Archive";
 import { api, type TrainingState } from "../api";
 import { errorText, useI18n, type TKey } from "../i18n";
+import { TrainingCharts } from "./TrainingCharts";
 
 type Props = {
   state: TrainingState;
@@ -28,10 +31,11 @@ const STATUS_COLOR: Record<TrainingState["status"], "default" | "info" | "succes
   done: "success",
   failed: "error",
   cancelled: "warning",
+  interrupted: "warning",
 };
 
-const STAGE_KEYS = new Set(["checking_datasets", "downloading_dataset", "extracting_dataset", "preparing", "training", "converting", "done", "failed", "cancelled"]);
-const MSG_KEYS = new Set(["init_tf", "augment_positive", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready"]);
+const STAGE_KEYS = new Set(["checking_datasets", "downloading_dataset", "extracting_dataset", "preparing", "training", "converting", "done", "failed", "cancelled", "interrupted"]);
+const MSG_KEYS = new Set(["init_tf", "augment_positive", "hard_negatives", "speech_features", "noise_features", "ambient_features", "train_steps", "find_model", "model_ready"]);
 
 function formatBytes(n: number) {
   if (n > 1 << 30) return `${(n / (1 << 30)).toFixed(2)} GB`;
@@ -61,6 +65,18 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
     setBusy(true);
     try {
       await api.startTraining();
+      setShowLog(true);
+    } catch (e) {
+      onError(errorText(t, e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resume = async () => {
+    setBusy(true);
+    try {
+      await api.resumeTraining();
       setShowLog(true);
     } catch (e) {
       onError(errorText(t, e));
@@ -193,6 +209,23 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
             </Box>
           )}
 
+          {state.status === "interrupted" && (
+            <Alert
+              severity="warning"
+              action={
+                state.resumable ? (
+                  <Button color="inherit" size="small" startIcon={<RestartAltIcon />} onClick={resume} disabled={busy}>
+                    {t("train.resume")}
+                  </Button>
+                ) : undefined
+              }
+            >
+              {t("train.resumeHint")}
+            </Alert>
+          )}
+
+          {state.validation.length > 1 && <TrainingCharts validation={state.validation} roc={state.final_metrics?.points} />}
+
           {state.status === "failed" && (
             <Alert severity="error">
               {state.error ?? t("train.failed")} {t("train.failedHint")}
@@ -219,6 +252,11 @@ export function TrainingCard({ state, log, connected, positiveCount, wakeWord, o
                   {state.manifest_url && (
                     <Button variant="outlined" startIcon={<DownloadIcon />} href={state.manifest_url} download>
                       {t("train.downloadManifest")}
+                    </Button>
+                  )}
+                  {state.export_url && (
+                    <Button variant="outlined" startIcon={<ArchiveIcon />} href={state.export_url} download>
+                      {t("train.export")}
                     </Button>
                   )}
                 </Stack>

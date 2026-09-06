@@ -4,6 +4,7 @@ import { api, type TrainingState } from "../api";
 const EMPTY: TrainingState = {
   status: "idle",
   job_id: null,
+  project_id: null,
   wake_word: null,
   stage: null,
   stage_key: null,
@@ -20,6 +21,8 @@ const EMPTY: TrainingState = {
   final_metrics: null,
   model_url: null,
   manifest_url: null,
+  export_url: null,
+  resumable: false,
   started_at: null,
   finished_at: null,
   error: null,
