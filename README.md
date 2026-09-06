@@ -1,10 +1,14 @@
 # Wake Word Trainer
 
+*(English: a self-contained web app to record wake word samples, train a
+[microWakeWord](https://github.com/kahrendt/microWakeWord) model and test it live in the browser; the UI
+switches between Czech and English according to the browser language, with a manual override in the header.)*
+
 Samostatná webová aplikace pro nahrávání hlasových vzorků a trénování vlastního wake word modelu
 pomocí [microWakeWord](https://github.com/kahrendt/microWakeWord) (TensorFlow → kvantizovaný streamovaný
 TensorFlow Lite model použitelný v ESPHome `micro_wake_word`).
 
-- **Frontend:** Vite + React + TypeScript + Material UI (světlé/tmavé téma podle systému)
+- **Frontend:** Vite + React + TypeScript + Material UI (světlé/tmavé téma podle systému, čeština/angličtina podle jazyka prohlížeče)
 - **Backend:** FastAPI (Python 3.11), trénink běží jako subprocess, průběh se streamuje přes SSE
 - **Audio:** Web Audio API (AudioWorklet) → WAV 16 kHz / mono / 16-bit PCM; na serveru normalizace přes FFmpeg
 
@@ -51,6 +55,11 @@ Volitelně lze nastavit HTTP Basic auth proměnnými `APP_USER` / `APP_PASSWORD`
    na streamovaný `.tflite`. Průběh (kroky, loss, přesnost, validace, log) se zobrazuje živě.
 5. **Stažení** – po dokončení stáhnete `<wakeword>.tflite` a manifest JSON pro ESPHome. `probability_cutoff`
    v manifestu se odvodí z ROC křivky na testovací sadě (omezeno na 0.6–0.97) a lze jej ručně doladit.
+6. **Otestování v prohlížeči** – audio z mikrofonu se streamuje WebSocketem na server, kde běží stejný
+   kvantizovaný streamovaný `.tflite` model (micro-frontend + klouzavý průměr jako v ESPHome). Vidíte živou
+   pravděpodobnost, práh a počet detekcí; práh a okno lze měnit a přenést do manifestu. Tlačítko „Vyhodnotit na
+   nahrávkách“ pustí model přes všechny uložené vzorky a ukáže, které wake wordy model nerozpozná a které
+   negativní nahrávky ho falešně spustí.
 
 ## Použití v ESPHome
 
@@ -77,6 +86,8 @@ Hodnotu `probability_cutoff` v manifestu (výchozí 0.97) podle potřeby snižte
 | GET | `/api/train/status` | SSE stream (`snapshot`, `state`, `log`) |
 | GET | `/api/train/model` | Stažení posledního natrénovaného `.tflite` |
 | GET | `/api/jobs` · `/api/jobs/{id}/model` · `/api/jobs/{id}/manifest` · `/api/jobs/{id}/log` | Historie běhů |
+| WS | `/api/test/ws?job_id=…&cutoff=…&window=…` | Živý test: binární int16 16 kHz PCM → JSON s pravděpodobnostmi a detekcemi |
+| POST | `/api/jobs/{id}/evaluate?cutoff=…&window=…` | Vyhodnocení modelu na uložených nahrávkách |
 
 ## Struktura
 

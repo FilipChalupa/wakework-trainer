@@ -21,6 +21,7 @@ router = APIRouter(prefix="/api", tags=["test"])
 
 FRAME_BYTES = 160 * 2  # 10 ms of 16 kHz int16 audio
 REFRACTORY_SLICES = 25  # like microWakeWord's ignore_slices_after_accept (~0.75 s)
+WARMUP_SLICES = 25  # the streaming model's zero initial state produces a short transient; ignore it (as microWakeWord's tests do)
 
 
 class StreamingDetector:
@@ -39,6 +40,7 @@ class StreamingDetector:
         self._frames: list[list[float]] = []
         self._recent: deque[float] = deque(maxlen=self.window)
         self._refractory = 0
+        self._warmup = WARMUP_SLICES
         self.max_average = 0.0
         self.detections = 0
 
@@ -58,8 +60,12 @@ class StreamingDetector:
                 probability = float(self.model.predict_spectrogram(chunk)[0])
                 self._recent.append(probability)
                 average = float(sum(self._recent) / len(self._recent))
-                self.max_average = max(self.max_average, average)
                 detected = False
+                if self._warmup > 0:
+                    self._warmup -= 1
+                    results.append({"p": round(probability, 4), "avg": round(average, 4), "detected": False, "warmup": True})
+                    continue
+                self.max_average = max(self.max_average, average)
                 if self._refractory > 0:
                     self._refractory -= 1
                 elif average >= self.cutoff and len(self._recent) == self.window:
@@ -105,8 +111,8 @@ def _load_pcm16(path: Path) -> bytes:
 
 def evaluate_clip(model_path: Path, pcm: bytes, cutoff: float, window: int) -> dict[str, Any]:
     detector = StreamingDetector(model_path, cutoff=cutoff, window=window)
-    # trailing silence lets the model see the end of the word
-    detector.feed(pcm + bytes(FRAME_BYTES * 40))
+    # leading silence covers the model's start-up transient, trailing silence lets it see the end of the word
+    detector.feed(bytes(FRAME_BYTES * 90) + pcm + bytes(FRAME_BYTES * 40))
     return {"max_probability": round(detector.max_average, 4), "detections": detector.detections}
 
 
