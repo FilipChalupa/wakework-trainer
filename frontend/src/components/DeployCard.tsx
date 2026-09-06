@@ -43,6 +43,8 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
     return () => clearInterval(timer);
   }, [projectId]);
 
+  const wyoming = urls?.target === "wyoming";
+
   const copy = async () => {
     if (!urls) return;
     try {
@@ -56,12 +58,14 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
 
   return (
     <Card>
-      <CardHeader avatar={<RocketLaunchIcon color="primary" />} title={t("deploy.title")} subheader={t("deploy.subtitle")} />
+      <CardHeader avatar={<RocketLaunchIcon color="primary" />} title={wyoming ? t("deploy.titleWyoming") : t("deploy.title")} subheader={wyoming ? t("deploy.subtitleWyoming") : t("deploy.subtitle")} />
       <CardContent>
         <Stack spacing={2}>
-          <Typography variant="body2" color="text.secondary">
-            {t("deploy.help")}
-          </Typography>
+          {!wyoming && (
+            <Typography variant="body2" color="text.secondary">
+              {t("deploy.help")}
+            </Typography>
+          )}
           {urls && !urls.has_model && <Alert severity="info">{t("deploy.noModel")}</Alert>}
           {urls && urls.target === "wyoming" && <Alert severity="info" variant="outlined">{t("deploy.wyomingHelp")}</Alert>}
           {urls && (
@@ -69,7 +73,7 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
               <TextField size="small" label={urls.target === "wyoming" ? t("deploy.modelUrl") : t("deploy.manifest")} value={urls.target === "wyoming" ? urls.model_url : urls.manifest_url} fullWidth InputProps={{ readOnly: true }} onFocus={(e) => e.target.select()} />
               <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap alignItems="center">
                 <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={copy}>
-                  {copied ? t("share.copied") : t("deploy.copy")}
+                  {copied ? t("share.copied") : wyoming ? t("deploy.copyWyoming") : t("deploy.copy")}
                 </Button>
                 <Button startIcon={showSnippet ? <ExpandLessIcon /> : <ExpandMoreIcon />} onClick={() => setShowSnippet((v) => !v)}>
                   {urls.target === "wyoming" ? t("deploy.snippetWyoming") : t("deploy.snippet")}
@@ -81,12 +85,15 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
                   {urls.snippet}
                 </Box>
               </Collapse>
-              <Typography variant="caption" color="text.secondary">
-                {t("deploy.https")}
-              </Typography>
+              {!wyoming && (
+                <Typography variant="caption" color="text.secondary">
+                  {t("deploy.https")}
+                </Typography>
+              )}
             </>
           )}
 
+          {!wyoming && (
           <Box>
             <Stack direction="row" spacing={1} alignItems="center">
               <DeveloperBoardIcon fontSize="small" color="primary" />
@@ -123,6 +130,7 @@ export function DeployCard({ projectId, jobsVersion, onError }: Props) {
               </Stack>
             )}
           </Box>
+          )}
         </Stack>
       </CardContent>
     </Card>
