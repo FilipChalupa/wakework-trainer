@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from . import datasets
@@ -124,6 +124,8 @@ def job_summary(job_dir: Path, running_job_id: str | None) -> dict[str, Any] | N
         "job_id": job["job_id"],
         "project_id": job.get("project_id"),
         "wake_word": job.get("wake_word"),
+        "label": job.get("label") or "",
+        "overrides": job.get("overrides") or {},
         "slug": slug,
         "created_at": job.get("created_at"),
         "finished_at": result.get("finished_at"),
@@ -177,6 +179,7 @@ class JobManager:
         self.state: dict[str, Any] = self._idle_state()
         self.log: deque[str] = deque(maxlen=MAX_LOG_LINES)
         self._last_minibatch_emit = 0.0
+        self.queue: list[dict[str, Any]] = []
         self._restore_last_job()
 
     @staticmethod
@@ -185,6 +188,7 @@ class JobManager:
             "status": "idle",  # idle | downloading | preparing | training | converting | done | failed | cancelled | interrupted
             "job_id": None,
             "project_id": None,
+            "label": "",
             "wake_word": None,
             "stage": None,
             "stage_key": None,
@@ -262,6 +266,7 @@ class JobManager:
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
             snap = json.loads(json.dumps(self.state))
+            snap["queue"] = list(self.queue)
         snap["log_tail"] = list(self.log)[-80:]
         return snap
 
@@ -309,14 +314,29 @@ class JobManager:
         self._publish("log", {"line": line})
 
     # ----- job lifecycle -------------------------------------------------
-    def start(self) -> dict[str, Any]:
-        if self.is_running():
-            raise HTTPException(409, {"code": "already_running", "message": "Training is already running"})
+    def start(self, overrides: dict[str, Any] | None = None, label: str | None = None) -> dict[str, Any]:
+        """Starts a run now, or queues it when one is already running."""
         project = current_project()
         positives = list_recordings("positive", project)
         if len(positives) < 3:
             raise HTTPException(400, {"code": "too_few_samples", "message": "Record at least 3 wake word samples (20-40 recommended)."})
+        spec = {"project_id": project.id, "overrides": overrides or {}, "label": (label or "").strip()[:60], "queued_at": _now(), "id": uuid.uuid4().hex[:8]}
+        if self.is_running():
+            with self._lock:
+                self.queue.append(spec)
+            self._publish("queue", {"queue": self.queue})
+            return self.snapshot()
+        self._start_spec(spec)
+        return self.snapshot()
+
+    def _start_spec(self, spec: dict[str, Any]) -> None:
+        project = Project(spec["project_id"]).ensure()
+        positives = list_recordings("positive", project)
         settings = load_settings(project)
+        training = dict(settings["training"])
+        for key, value in (spec.get("overrides") or {}).items():
+            if key in training and value is not None:
+                training[key] = type(training[key])(value)
         job_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
         job_dir = project.jobs_dir / job_id
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -325,7 +345,9 @@ class JobManager:
             "project_id": project.id,
             "wake_word": settings["wake_word"],
             "slug": slugify(settings["wake_word"]),
-            "training": settings["training"],
+            "training": training,
+            "overrides": spec.get("overrides") or {},
+            "label": spec.get("label") or "",
             "positive_dir": str(project.positive_dir),
             "negative_dir": str(project.negative_dir),
             "datasets_dir": str(DATASETS_DIR),
@@ -340,7 +362,35 @@ class JobManager:
         self._launch(job, resume=False)
         if removed:
             self._log(f"Removed {removed} old training run(s) (KEEP_JOBS={KEEP_JOBS})")
+
+    def sweep(self, param: str, values: list[Any], label: str | None = None) -> dict[str, Any]:
+        from .config import DEFAULT_TRAINING
+
+        if param not in DEFAULT_TRAINING or param == "hard_negatives":
+            raise HTTPException(400, {"code": "bad_param", "message": f"Cannot sweep '{param}'"})
+        values = [v for v in values if v is not None][:8]
+        if not values:
+            raise HTTPException(400, {"code": "bad_values", "message": "No values given"})
+        for value in values:
+            self.start({param: value}, f"{label or 'sweep'} {param}={value}")
         return self.snapshot()
+
+    def drop_queued(self, spec_id: str) -> None:
+        with self._lock:
+            self.queue = [q for q in self.queue if q["id"] != spec_id]
+        self._publish("queue", {"queue": self.queue})
+
+    def _start_next(self) -> None:
+        with self._lock:
+            spec = self.queue.pop(0) if self.queue else None
+        self._publish("queue", {"queue": self.queue})
+        if spec is None:
+            return
+        try:
+            self._start_spec(spec)
+        except Exception as exc:  # noqa: BLE001
+            self._log(f"Could not start queued run: {exc}")
+            self._start_next()
 
     def resume(self) -> dict[str, Any]:
         if self.is_running():
@@ -363,6 +413,7 @@ class JobManager:
             status="downloading",
             job_id=job["job_id"],
             project_id=job.get("project_id"),
+            label=job.get("label") or "",
             wake_word=job["wake_word"],
             stage="Checking datasets",
             stage_key="checking_datasets",
@@ -377,6 +428,9 @@ class JobManager:
         if not self.is_running():
             raise HTTPException(409, {"code": "not_running", "message": "No training running"})
         self._cancel.set()
+        with self._lock:
+            self.queue.clear()
+        self._publish("queue", {"queue": []})
         proc = self._proc
         if proc and proc.poll() is None:
             proc.terminate()
@@ -412,6 +466,8 @@ class JobManager:
             self._write_result(job_dir, "failed", error=str(exc))
         finally:
             self._proc = None
+            if not self._cancel.is_set():
+                self._start_next()
 
     def _ensure_datasets(self) -> None:
         for name, meta in datasets.DATASETS.items():
@@ -585,8 +641,32 @@ manager = JobManager()
 
 # ----- routes ---------------------------------------------------------------
 @router.post("/train")
-def start_training():
-    return manager.start()
+async def start_training(request: Request):
+    body: dict[str, Any] = {}
+    try:
+        if int(request.headers.get("content-length") or 0) > 0:
+            body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return manager.start(body.get("training") or {}, body.get("label"))
+
+
+@router.post("/train/sweep")
+async def start_sweep(body: dict[str, Any]):
+    return manager.sweep(str(body.get("param", "")), list(body.get("values") or []), body.get("label"))
+
+
+@router.get("/train/queue")
+def get_queue():
+    return {"queue": manager.queue}
+
+
+@router.delete("/train/queue/{spec_id}")
+def delete_queued(spec_id: str):
+    manager.drop_queued(spec_id)
+    return {"queue": manager.queue}
 
 
 @router.post("/train/resume")

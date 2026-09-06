@@ -139,6 +139,16 @@ def set_tag(kind: str, rec_id: str, tag: str | None, project: Project) -> None:
     write_meta(kind, project, meta)
 
 
+def set_review(kind: str, rec_id: str, review: bool, project: Project) -> None:
+    meta = read_meta(kind, project)
+    entry = meta.setdefault(rec_id, {})
+    if review:
+        entry["review"] = True
+    else:
+        entry.pop("review", None)
+    write_meta(kind, project, meta)
+
+
 def contributor_of(filename: str) -> str | None:
     stem = filename[:-4] if filename.endswith(".wav") else filename
     if "__" in stem:
@@ -152,6 +162,7 @@ def describe(kind: str, path: Path, url_prefix: str = "/api/recordings", meta: d
     entry = (meta or {}).get(path.name, {})
     return {
         "tag": entry.get("tag"),
+        "review": bool(entry.get("review")),
         "id": path.name,
         "kind": kind,
         "duration": info["duration"],
@@ -259,6 +270,17 @@ def get_contributors():
 @router.post("")
 async def upload_recording(file: UploadFile = File(...), kind: str = Form("positive"), tag: str | None = Form(None)):
     return await store_upload(file, kind, current_project(), tag=tag or None)
+
+
+@router.put("/{kind}/{rec_id}/review")
+async def put_review(kind: str, rec_id: str, body: dict):
+    check_id(rec_id)
+    project = current_project()
+    path = _dir(kind, project) / rec_id
+    if not path.exists():
+        raise HTTPException(404, "Not found")
+    set_review(kind, rec_id, bool(body.get("review")), project)
+    return describe(kind, path, meta=read_meta(kind, project))
 
 
 @router.put("/{kind}/{rec_id}/tag")

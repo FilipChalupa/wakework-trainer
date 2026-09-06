@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -19,6 +21,8 @@ import threading
 from .config import Project, current_project
 
 router = APIRouter(prefix="/api", tags=["test"])
+MONITOR_KEEP_BYTES = 16000 * 2 * 3  # last 3 s of audio kept for saving detections
+MONITOR_MAX_FILES = 200
 
 _eval_lock = threading.Semaphore(1)  # one offline evaluation at a time
 _live_sessions = threading.Semaphore(2)  # at most two concurrent live tests
@@ -41,6 +45,7 @@ class StreamingDetector:
         self.cutoff = float(cutoff)
         self.window = max(1, int(window))
         self._buffer = b""
+        self._history = b""  # last few seconds of PCM (for saving detections in monitor mode)
         self._frames: list[list[float]] = []
         self._recent: deque[float] = deque(maxlen=self.window)
         self._refractory = 0
@@ -48,7 +53,11 @@ class StreamingDetector:
         self.max_average = 0.0
         self.detections = 0
 
+    def recent_audio(self) -> bytes:
+        return self._history[-MONITOR_KEEP_BYTES:]
+
     def feed(self, pcm: bytes) -> list[dict[str, Any]]:
+        self._history = (self._history + pcm)[-MONITOR_KEEP_BYTES:]
         self._buffer += pcm
         results: list[dict[str, Any]] = []
         idx = 0
@@ -79,6 +88,29 @@ class StreamingDetector:
                 results.append({"p": round(probability, 4), "avg": round(average, 4), "detected": detected})
         self._buffer = self._buffer[idx:]
         return results
+
+
+def monitor_dir(project: Project) -> Path:
+    path = project.dir / "monitor"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def save_detection(project: Project, pcm: bytes, job_id: str) -> dict[str, Any]:
+    from .recordings import describe
+
+    folder = monitor_dir(project)
+    name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.wav"
+    path = folder / name
+    audio = np.frombuffer(pcm, dtype=np.int16)
+    sf.write(str(path), audio, 16000, subtype="PCM_16")
+    old = sorted(folder.glob("*.wav"), key=lambda p: p.stat().st_mtime)
+    for stale in old[:-MONITOR_MAX_FILES]:
+        stale.unlink(missing_ok=True)
+    item = describe("monitor", path, url_prefix="/api/monitor/audio")
+    item["url"] = f"/api/monitor/audio/{name}"
+    item["job_id"] = job_id
+    return item
 
 
 def _job_dir(job_id: str) -> Path:
@@ -160,6 +192,16 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
                 })
         positives = [r for r in results if r["kind"] == "positive" and r["max_probability"] is not None]
         negatives = [r for r in results if r["kind"] == "negative" and r["max_probability"] is not None]
+        # outliers: wake word recordings the model scores far below the typical one (likely bad takes),
+        # negatives that trigger the model (likely contain the wake word or a look-alike)
+        median = float(np.median([r["max_probability"] for r in positives])) if positives else 0.0
+        for r in results:
+            if r["max_probability"] is None:
+                r["outlier"] = False
+            elif r["kind"] == "positive":
+                r["outlier"] = len(positives) >= 4 and r["max_probability"] < max(0.5 * median, median - 0.3)
+            else:
+                r["outlier"] = r["detections"] > 0
         by_tag: dict[str, dict[str, int]] = {}
         for r in positives:
             entry = by_tag.setdefault(r["tag"] or "normal", {"total": 0, "detected": 0})
@@ -175,6 +217,8 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
                 "negative_total": len(negatives),
                 "negative_triggered": sum(1 for r in negatives if r["detections"] > 0),
                 "by_tag": by_tag,
+                "outliers": sum(1 for r in results if r.get("outlier")),
+                "median_positive": round(median, 3),
             },
         }
 
@@ -198,6 +242,9 @@ async def test_websocket(websocket: WebSocket):
     micro = manifest.get("micro", {})
     cutoff = float(params.get("cutoff") or micro.get("probability_cutoff", 0.97))
     window = int(params.get("window") or micro.get("sliding_window_size", 5))
+    save = params.get("save") in ("1", "true", "yes")
+    job = json.loads((_job_dir(job_id) / "job.json").read_text())
+    project = Project(job["project_id"]) if job.get("project_id") else current_project()
     if not _live_sessions.acquire(blocking=False):
         await websocket.send_json({"type": "error", "message": "Too many live test sessions"})
         await websocket.close()
@@ -232,6 +279,12 @@ async def test_websocket(websocket: WebSocket):
                     "detections": detector.detections,
                     "max": round(detector.max_average, 4),
                 })
+                if save and any(f["detected"] for f in results):
+                    try:
+                        item = await run_in_threadpool(save_detection, project, detector.recent_audio(), job_id)
+                        await websocket.send_json({"type": "detection", "item": item, "t": round(time.time() - started, 3)})
+                    except Exception as exc:  # noqa: BLE001
+                        await websocket.send_json({"type": "error", "message": f"Could not save detection: {exc}"})
     except WebSocketDisconnect:
         pass
     except Exception as exc:  # noqa: BLE001
@@ -241,3 +294,69 @@ async def test_websocket(websocket: WebSocket):
             pass
     finally:
         _live_sessions.release()
+
+
+# ----- monitor: saved detections from long-running tests ---------------------------------
+SAFE_NAME = re.compile(r"^[a-zA-Z0-9_\-]+\.wav$")
+
+
+@router.get("/monitor")
+def list_monitor():
+    from .recordings import describe
+
+    project = current_project()
+    folder = monitor_dir(project)
+    items = []
+    for path in sorted(folder.glob("*.wav"), key=lambda p: p.stat().st_mtime, reverse=True):
+        item = describe("monitor", path, url_prefix="/api/monitor/audio")
+        item["url"] = f"/api/monitor/audio/{path.name}"
+        items.append(item)
+    return {"items": items}
+
+
+@router.get("/monitor/audio/{name}")
+def monitor_audio(name: str):
+    if not SAFE_NAME.match(name):
+        raise HTTPException(400, "Bad name")
+    path = monitor_dir(current_project()) / name
+    if not path.exists():
+        raise HTTPException(404, "Not found")
+    from fastapi.responses import FileResponse
+
+    return FileResponse(path, media_type="audio/wav", filename=name)
+
+
+@router.post("/monitor/{name}/negative")
+def monitor_to_negative(name: str):
+    """Moves a saved false activation into the project's negative samples (tagged 'noisy' when it came from a monitor)."""
+    from .recordings import describe, set_tag
+
+    if not SAFE_NAME.match(name):
+        raise HTTPException(400, "Bad name")
+    project = current_project()
+    src = monitor_dir(project) / name
+    if not src.exists():
+        raise HTTPException(404, "Not found")
+    dst = project.negative_dir / f"{name[:-4]}__monitor.wav"
+    src.rename(dst)
+    return describe("negative", dst)
+
+
+@router.delete("/monitor/{name}")
+def delete_monitor(name: str):
+    if not SAFE_NAME.match(name):
+        raise HTTPException(400, "Bad name")
+    path = monitor_dir(current_project()) / name
+    if path.exists():
+        path.unlink()
+    return {"deleted": name}
+
+
+@router.delete("/monitor")
+def clear_monitor():
+    folder = monitor_dir(current_project())
+    n = 0
+    for path in folder.glob("*.wav"):
+        path.unlink()
+        n += 1
+    return {"deleted": n}

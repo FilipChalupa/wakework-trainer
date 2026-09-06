@@ -96,6 +96,7 @@ def _default_settings(name: str, wake_word: str) -> dict[str, Any]:
         "sample_duration_s": 2.0,
         "training": dict(DEFAULT_TRAINING),
         "share_token": None,
+        "model_token": None,
         "contributor_target": 10,
         "webhook_url": "",
         "created_at": _now(),
@@ -226,6 +227,25 @@ def find_project_by_token(token: str) -> Project | None:
         if stored and secrets.compare_digest(str(stored), token):
             return p
     return None
+
+
+def find_project_by_model_token(token: str) -> Project | None:
+    if not token:
+        return None
+    for entry in list_projects():
+        p = Project(entry["id"])
+        stored = load_settings(p).get("model_token")
+        if stored and secrets.compare_digest(str(stored), token):
+            return p
+    return None
+
+
+def get_or_create_model_token(project: Project) -> str:
+    settings = load_settings(project)
+    if not settings.get("model_token"):
+        settings["model_token"] = secrets.token_urlsafe(18)
+        write_settings(project, settings)
+    return str(settings["model_token"])
 
 
 def set_share_token(project: Project, enabled: bool) -> str | None:
