@@ -1,6 +1,7 @@
 """Upload / list / play / delete recorded samples (+ quality analysis, trash with restore)."""
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
@@ -19,6 +20,7 @@ from .config import Project, current_project, slugify
 router = APIRouter(prefix="/api/recordings", tags=["recordings"])
 
 KINDS = ("positive", "negative")
+TAGS = ("normal", "far", "noisy", "whisper", "loud")
 SAFE_ID = re.compile(r"^[a-zA-Z0-9_\-]+\.wav$")
 TRASH_KEEP = 50
 PEAK_BUCKETS = 48
@@ -106,6 +108,37 @@ def analyze(path: Path) -> dict:
     return result
 
 
+def _meta_file(kind: str, project: Project) -> Path:
+    return _dir(kind, project) / "meta.json"
+
+
+def read_meta(kind: str, project: Project) -> dict[str, dict]:
+    path = _meta_file(kind, project)
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_meta(kind: str, project: Project, meta: dict[str, dict]) -> None:
+    with _cache_lock:
+        _meta_file(kind, project).write_text(json.dumps(meta, indent=1, ensure_ascii=False))
+
+
+def set_tag(kind: str, rec_id: str, tag: str | None, project: Project) -> None:
+    if tag and tag not in TAGS:
+        raise HTTPException(400, {"code": "bad_tag", "message": f"Unknown tag '{tag}'"})
+    meta = read_meta(kind, project)
+    entry = meta.setdefault(rec_id, {})
+    if tag:
+        entry["tag"] = tag
+    else:
+        entry.pop("tag", None)
+    write_meta(kind, project, meta)
+
+
 def contributor_of(filename: str) -> str | None:
     stem = filename[:-4] if filename.endswith(".wav") else filename
     if "__" in stem:
@@ -113,10 +146,12 @@ def contributor_of(filename: str) -> str | None:
     return None
 
 
-def describe(kind: str, path: Path, url_prefix: str = "/api/recordings") -> dict:
+def describe(kind: str, path: Path, url_prefix: str = "/api/recordings", meta: dict[str, dict] | None = None) -> dict:
     stat = path.stat()
     info = analyze(path)
+    entry = (meta or {}).get(path.name, {})
     return {
+        "tag": entry.get("tag"),
         "id": path.name,
         "kind": kind,
         "duration": info["duration"],
@@ -133,7 +168,17 @@ def list_recordings(kind: str, project: Project, contributor: str | None = None,
     files = sorted(_dir(kind, project).glob("*.wav"), key=lambda p: (p.stat().st_mtime, p.name))
     if contributor is not None:
         files = [f for f in files if contributor_of(f.name) == contributor]
-    return [describe(kind, f, url_prefix) for f in files]
+    meta = read_meta(kind, project)
+    return [describe(kind, f, url_prefix, meta) for f in files]
+
+
+def contributors(project: Project) -> list[dict]:
+    counts: dict[str, dict[str, int]] = {}
+    for kind in KINDS:
+        for f in _dir(kind, project).glob("*.wav"):
+            name = contributor_of(f.name) or "owner"
+            counts.setdefault(name, {"positive": 0, "negative": 0})[kind] += 1
+    return [{"name": n, **c} for n, c in sorted(counts.items(), key=lambda kv: -kv[1]["positive"])]
 
 
 def check_id(rec_id: str) -> None:
@@ -141,7 +186,7 @@ def check_id(rec_id: str) -> None:
         raise HTTPException(400, "Bad id")
 
 
-async def store_upload(file: UploadFile, kind: str, project: Project, contributor: str | None = None, url_prefix: str = "/api/recordings") -> dict:
+async def store_upload(file: UploadFile, kind: str, project: Project, contributor: str | None = None, url_prefix: str = "/api/recordings", tag: str | None = None) -> dict:
     target_dir = _dir(kind, project)
     raw = await file.read()
     if not raw:
@@ -158,7 +203,9 @@ async def store_upload(file: UploadFile, kind: str, project: Project, contributo
     name = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}{suffix}.wav"
     path = target_dir / name
     path.write_bytes(wav)
-    return describe(kind, path, url_prefix)
+    if tag:
+        set_tag(kind, name, tag, project)
+    return describe(kind, path, url_prefix, read_meta(kind, project))
 
 
 def soft_delete(kind: str, rec_id: str, project: Project) -> None:
@@ -180,7 +227,7 @@ def restore(kind: str, rec_id: str, project: Project, url_prefix: str = "/api/re
         raise HTTPException(404, "Not in trash")
     dst = _dir(kind, project) / rec_id
     src.rename(dst)
-    return describe(kind, dst, url_prefix)
+    return describe(kind, dst, url_prefix, read_meta(kind, project))
 
 
 def file_response(kind: str, rec_id: str, project: Project) -> FileResponse:
@@ -204,9 +251,25 @@ def get_counts():
     return {k: len(list(_dir(k, project).glob("*.wav"))) for k in KINDS}
 
 
+@router.get("/contributors")
+def get_contributors():
+    return {"items": contributors(current_project()), "tags": list(TAGS)}
+
+
 @router.post("")
-async def upload_recording(file: UploadFile = File(...), kind: str = Form("positive")):
-    return await store_upload(file, kind, current_project())
+async def upload_recording(file: UploadFile = File(...), kind: str = Form("positive"), tag: str | None = Form(None)):
+    return await store_upload(file, kind, current_project(), tag=tag or None)
+
+
+@router.put("/{kind}/{rec_id}/tag")
+async def put_tag(kind: str, rec_id: str, body: dict):
+    check_id(rec_id)
+    project = current_project()
+    set_tag(kind, rec_id, body.get("tag") or None, project)
+    path = _dir(kind, project) / rec_id
+    if not path.exists():
+        raise HTTPException(404, "Not found")
+    return describe(kind, path, meta=read_meta(kind, project))
 
 
 @router.get("/{kind}/{rec_id}")

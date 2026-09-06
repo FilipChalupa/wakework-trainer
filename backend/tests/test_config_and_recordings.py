@@ -92,3 +92,38 @@ def test_legacy_layout_migration(tmp_path, monkeypatch):
     assert (project.positive_dir / "x.wav").exists()
     assert config.load_settings(project)["training"]["training_steps"] == 123
     assert not (tmp_path / "project.json").exists()
+
+
+def test_tags_and_contributor_stats():
+    up = client.post("/api/recordings", data={"kind": "positive", "tag": "far"}, files={"file": ("a.wav", _wav_bytes(), "audio/wav")}).json()
+    assert up["tag"] == "far"
+    changed = client.put(f"/api/recordings/positive/{up['id']}/tag", json={"tag": "whisper"}).json()
+    assert changed["tag"] == "whisper"
+    assert client.put(f"/api/recordings/positive/{up['id']}/tag", json={"tag": "nonsense"}).status_code == 400
+    stats = client.get("/api/recordings/contributors").json()
+    assert stats["items"][0]["name"] == "owner" and stats["items"][0]["positive"] >= 1
+    assert "far" in stats["tags"]
+    client.delete(f"/api/recordings/positive/{up['id']}")
+
+
+def test_project_export_import_roundtrip():
+    pid = client.get("/api/projects").json()["current"]
+    up = client.post("/api/recordings", data={"kind": "positive", "tag": "noisy"}, files={"file": ("a.wav", _wav_bytes(), "audio/wav")}).json()
+    client.put("/api/config", json={"contributor_target": 7, "webhook_url": "http://example.invalid/hook"})
+    res = client.get(f"/api/projects/{pid}/export")
+    assert res.status_code == 200 and res.headers["content-type"] == "application/zip"
+    imported = client.post("/api/projects/import", files={"file": ("p.zip", res.content, "application/zip")}).json()
+    new_id = imported["current"]
+    assert new_id != pid
+    cfg = client.get("/api/config").json()["project"]
+    assert cfg["id"] == new_id and cfg["contributor_target"] == 7 and cfg["share_token"] is None
+    items = client.get("/api/recordings?kind=positive").json()["items"]
+    assert len(items) == 1 and items[0]["tag"] == "noisy"
+    client.post(f"/api/projects/{pid}/select")
+    client.delete(f"/api/projects/{new_id}")
+    client.delete(f"/api/recordings/positive/{up['id']}")
+
+
+def test_system_endpoint():
+    info = client.get("/api/system").json()
+    assert "gpu_available" in info and "tensorflow_cuda" in info and info["cpu_count"]

@@ -140,16 +140,31 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
         raise HTTPException(429, {"code": "busy", "message": "Another evaluation is running"})
 
     def run() -> dict[str, Any]:
+        from .recordings import contributor_of, read_meta
+
         results = []
         for kind, folder in (("positive", project.positive_dir), ("negative", project.negative_dir)):
+            meta = read_meta(kind, project)
             for path in sorted(folder.glob("*.wav")):
                 try:
                     res = evaluate_clip(model, _load_pcm16(path), cutoff, window)
                 except Exception as exc:  # noqa: BLE001
                     res = {"max_probability": None, "detections": 0, "error": str(exc)}
-                results.append({"id": path.name, "kind": kind, "url": f"/api/recordings/{kind}/{path.name}", **res})
+                results.append({
+                    "id": path.name,
+                    "kind": kind,
+                    "url": f"/api/recordings/{kind}/{path.name}",
+                    "tag": meta.get(path.name, {}).get("tag"),
+                    "contributor": contributor_of(path.name),
+                    **res,
+                })
         positives = [r for r in results if r["kind"] == "positive" and r["max_probability"] is not None]
         negatives = [r for r in results if r["kind"] == "negative" and r["max_probability"] is not None]
+        by_tag: dict[str, dict[str, int]] = {}
+        for r in positives:
+            entry = by_tag.setdefault(r["tag"] or "normal", {"total": 0, "detected": 0})
+            entry["total"] += 1
+            entry["detected"] += 1 if r["detections"] > 0 else 0
         return {
             "cutoff": cutoff,
             "window": window,
@@ -159,6 +174,7 @@ async def evaluate_job(job_id: str, cutoff: float | None = None, window: int = 5
                 "positive_detected": sum(1 for r in positives if r["detections"] > 0),
                 "negative_total": len(negatives),
                 "negative_triggered": sum(1 for r in negatives if r["detections"] > 0),
+                "by_tag": by_tag,
             },
         }
 

@@ -96,6 +96,8 @@ def _default_settings(name: str, wake_word: str) -> dict[str, Any]:
         "sample_duration_s": 2.0,
         "training": dict(DEFAULT_TRAINING),
         "share_token": None,
+        "contributor_target": 10,
+        "webhook_url": "",
         "created_at": _now(),
     }
 
@@ -128,6 +130,10 @@ def save_settings(project: Project, update: dict[str, Any]) -> dict[str, Any]:
         settings["name"] = str(update["name"]).strip() or settings["name"]
     if "sample_duration_s" in update:
         settings["sample_duration_s"] = float(update["sample_duration_s"])
+    if "contributor_target" in update:
+        settings["contributor_target"] = max(1, int(update["contributor_target"] or 10))
+    if "webhook_url" in update:
+        settings["webhook_url"] = str(update["webhook_url"] or "").strip()
     if "training" in update and isinstance(update["training"], dict):
         for key, default in DEFAULT_TRAINING.items():
             if key in update["training"] and update["training"][key] is not None:

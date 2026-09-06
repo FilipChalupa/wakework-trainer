@@ -36,3 +36,20 @@ def test_parse_and_summarize_roc():
 
 def test_summarize_roc_without_points():
     assert summarize_roc(None, []) == (None, 0.97)
+
+
+def test_datasets_registry_and_converter(tmp_path):
+    import soundfile as sf
+
+    from app.datasets import DATASETS, convert_audio_tree
+
+    assert DATASETS["mit_rirs"]["required"] and DATASETS["esc50"]["convert"]["max_seconds"] == 5.0
+    src = tmp_path / "sub" / "clip.wav"
+    src.parent.mkdir()
+    sf.write(str(src), np.zeros(44100 * 2, dtype=np.float32), 44100, subtype="PCM_16")
+    (tmp_path / "meta.csv").write_text("x")
+    count = convert_audio_tree(tmp_path, max_seconds=1.0, max_files=None)
+    assert count == 1
+    data, sr = sf.read(str(src))
+    assert sr == 16000 and abs(len(data) - 16000) < 100
+    assert not (tmp_path / "meta.csv").exists()

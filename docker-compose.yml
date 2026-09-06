@@ -16,4 +16,7 @@ services:
       - PGID=${PGID:-1000}
       # how many finished training runs to keep per project
       - KEEP_JOBS=${KEEP_JOBS:-10}
+      # optional: public base URL used in webhook payloads, and a global webhook (per-project URL can be set in the UI)
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - WEBHOOK_URL=${WEBHOOK_URL:-}
     restart: unless-stopped

@@ -29,7 +29,14 @@ def info(token: str = Query(...)):
     project = _project(token)
     settings = load_settings(project)
     positives = len(list(project.positive_dir.glob("*.wav")))
-    return {"project": settings["name"], "wake_word": settings["wake_word"], "sample_duration_s": settings["sample_duration_s"], "positive_count": positives}
+    return {
+        "project": settings["name"],
+        "wake_word": settings["wake_word"],
+        "sample_duration_s": settings["sample_duration_s"],
+        "positive_count": positives,
+        "contributor_target": int(settings.get("contributor_target") or 10),
+        "tags": list(recordings.TAGS),
+    }
 
 
 @router.get("/recordings")
@@ -42,9 +49,9 @@ def list_own(token: str = Query(...), name: str = Query(...), kind: str = "posit
 
 
 @router.post("/recordings")
-async def upload(token: str = Query(...), name: str = Query(...), file: UploadFile = File(...), kind: str = Form("positive")):
+async def upload(token: str = Query(...), name: str = Query(...), file: UploadFile = File(...), kind: str = Form("positive"), tag: str | None = Form(None)):
     project = _project(token)
-    item = await recordings.store_upload(file, kind, project, contributor=_contributor(name), url_prefix=URL_PREFIX)
+    item = await recordings.store_upload(file, kind, project, contributor=_contributor(name), url_prefix=URL_PREFIX, tag=tag or None)
     item["url"] += f"?token={token}"
     return item
 

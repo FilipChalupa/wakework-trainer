@@ -10,7 +10,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import contribute, datasets, livetest, recordings, training
+from . import contribute, datasets, livetest, recordings, system, training
 from .config import DATA_DIR, DEFAULT_TRAINING, current_project, load_settings, save_settings
 
 app = FastAPI(title="Wake Word Trainer", version="1.0.0")
@@ -42,6 +42,7 @@ app.include_router(datasets.router)
 app.include_router(training.router)
 app.include_router(livetest.router)
 app.include_router(contribute.router)
+app.include_router(system.router)
 
 
 @app.get("/api/health")

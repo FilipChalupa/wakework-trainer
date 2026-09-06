@@ -89,6 +89,9 @@ class FeatureWriter:
         return count
 
 
+IMPULSE_PATHS: list[str] = []  # set in main() when the MIT RIR dataset is installed
+
+
 def make_augmenter(duration_s: float, background: list[str], positive: bool, seed: int | None = None):
     from microwakeword.audio.augmentation import Augmentation
 
@@ -104,11 +107,12 @@ def make_augmenter(duration_s: float, background: list[str], positive: bool, see
         "AddBackgroundNoise": 0.6 if background else 0.0,
         "Gain": 1.0,
         "GainTransition": 0.2,
-        "RIR": 0.0,
+        "RIR": 0.5 if IMPULSE_PATHS else 0.0,
     }
     return Augmentation(
         augmentation_duration_s=duration_s,
         augmentation_probabilities=probabilities,
+        impulse_paths=IMPULSE_PATHS,
         background_paths=background,
         background_min_snr_db=-3 if positive else -10,
         background_max_snr_db=15,
@@ -257,8 +261,12 @@ def prepare_speech_commands(job: dict, writer: FeatureWriter) -> Path | None:
     return cache_dir
 
 
-def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_dir: Path, noise_files: list[Path], clip_ms: int) -> Path:
+def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_dir: Path, noise_files: list[Path], clip_ms: int, real_backgrounds: list[Path] | None = None) -> Path:
     user_negatives = sorted(Path(job["negative_dir"]).glob("*.wav"))
+    real_backgrounds = list(real_backgrounds or [])
+    rng = random.Random(5)
+    rng.shuffle(real_backgrounds)
+    real_backgrounds = real_backgrounds[:600]  # enough variety without blowing up preparation time
     out_dir = features_dir / "noise"
     duration_s = clip_ms / 1000.0 + 0.2
     noise_reps = 12
@@ -267,7 +275,10 @@ def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_
     for set_name, fraction in plan:
         n_reps = max(1, int(noise_reps * fraction))
         u_reps = max(1, int(user_reps * fraction))
-        expected = len(noise_files) * n_reps + len(user_negatives) * u_reps
+        r_reps = 1 if set_name == "training" else 0
+        real_subset = real_backgrounds if r_reps else real_backgrounds[: max(1, len(real_backgrounds) // 8)] if real_backgrounds else []
+        r_reps = 1 if real_subset else 0
+        expected = len(noise_files) * n_reps + len(user_negatives) * u_reps + len(real_subset) * r_reps
         stage("preparing", "Preparing data", "noise_features", f"Noise and custom negative recordings ({set_name})", {"set": set_name}, current=0, total=expected)
 
         def gen():
@@ -276,12 +287,15 @@ def prepare_noise_and_user_negatives(job: dict, writer: FeatureWriter, features_
             if user_negatives:
                 user_clips = WavClips({"train": user_negatives, "validation": user_negatives, "test": user_negatives}, trim=False)
                 yield from spectrogram_generator(user_clips, make_augmenter(duration_s, [str(noise_files[0].parent)], positive=False), "train", u_reps, None)
+            if real_subset:
+                real_clips = WavClips({"train": real_subset, "validation": real_subset, "test": real_subset}, trim=False, cache=False)
+                yield from spectrogram_generator(real_clips, make_augmenter(duration_s, [], positive=False), "train", r_reps, None)
 
         writer.write(out_dir / set_name / "noise_mmap", gen(), expected, f"noise/{set_name}")
     return out_dir
 
 
-def prepare_ambient(job: dict, writer: FeatureWriter, features_dir: Path, noise_files: list[Path], minutes: float = 4.0) -> Path:
+def prepare_ambient(job: dict, writer: FeatureWriter, features_dir: Path, noise_files: list[Path], minutes: float = 4.0, real_backgrounds: list[Path] | None = None) -> Path:
     from microwakeword.audio.audio_utils import generate_features_for_clip
 
     speech = list_speech_commands(job)
@@ -291,13 +305,16 @@ def prepare_ambient(job: dict, writer: FeatureWriter, features_dir: Path, noise_
         rng = random.Random(seed)
         splits = stable_split(speech) if speech else {"validation": [], "test": []}
         pool = list(splits["validation" if set_name.startswith("validation") else "test"]) + user_negatives * 5
+        if real_backgrounds:
+            pool += rng.sample(real_backgrounds, min(150, len(real_backgrounds)))
         stage("preparing", "Preparing data", "ambient_features", f"Long ambient recording for false-accept measurement ({set_name})", {"set": set_name}, current=0, total=2)
         if not pool:
             pool = noise_files
+        beds = noise_files + (rng.sample(real_backgrounds, min(40, len(real_backgrounds))) if real_backgrounds else [])
 
         def gen():
             for i in range(2):
-                clip = build_ambient_clip(pool, minutes * 60 / 2, rng, noise_files)
+                clip = build_ambient_clip(pool, minutes * 60 / 2, rng, beds)
                 yield generate_features_for_clip(clip, 10)
 
         writer.write(out_dir / set_name / "ambient_mmap", gen(), 2, f"ambient/{set_name}")
@@ -434,6 +451,11 @@ def main() -> int:
 
     gpus = tf.config.list_physical_devices("GPU")
     log(f"TensorFlow {tf.__version__}; GPU devices: {[g.name for g in gpus] or 'none (CPU training)'}")
+    try:
+        device_file = Path(job["feature_cache_dir"]).parent / "last_training_device.json"
+        device_file.write_text(json.dumps({"gpu": bool(gpus), "devices": [g.name for g in gpus], "tensorflow": tf.__version__, "at": time.strftime("%Y-%m-%dT%H:%M:%S"), "job_id": job["job_id"]}))
+    except OSError:
+        pass
 
     if resume:
         cfg = yaml.safe_load(config_path.read_text())
@@ -449,12 +471,24 @@ def main() -> int:
     background_dirs = [str(noise_dir)]
     if any(Path(job["negative_dir"]).glob("*.wav")):
         background_dirs.append(job["negative_dir"])
+    real_backgrounds: list[Path] = []
+    for folder in ("esc50", "fma_16k"):
+        candidate = Path(job["datasets_dir"]) / folder
+        wavs = [p for p in candidate.rglob("*.wav")] if candidate.is_dir() else []
+        if wavs:
+            background_dirs.append(str(candidate))
+            real_backgrounds.extend(wavs)
+            log(f"Using real background audio: {folder} ({len(wavs)} clips)")
+    rir_dir = Path(job["datasets_dir"]) / "mit_rirs"
+    if rir_dir.is_dir() and any(rir_dir.rglob("*.wav")):
+        IMPULSE_PATHS.append(str(rir_dir))
+        log(f"Using room impulse responses: {rir_dir}")
 
     clip_ms, positive_clips = prepare_positives(job, writer, features_dir, background_dirs)
     hard_dir = prepare_hard_negatives(job, writer, features_dir, positive_clips, clip_ms, background_dirs)
     speech_dir = prepare_speech_commands(job, writer)
-    noise_feat_dir = prepare_noise_and_user_negatives(job, writer, features_dir, noise_files, clip_ms)
-    ambient_dir = prepare_ambient(job, writer, features_dir, noise_files)
+    noise_feat_dir = prepare_noise_and_user_negatives(job, writer, features_dir, noise_files, clip_ms, real_backgrounds)
+    ambient_dir = prepare_ambient(job, writer, features_dir, noise_files, real_backgrounds=real_backgrounds)
 
     feature_sets = [
         {"features_dir": str(features_dir / "positive"), "sampling_weight": 3.0, "penalty_weight": 1.0, "truth": True, "truncation_strategy": "truncate_start", "type": "mmap"},
@@ -495,14 +529,62 @@ def run_training_and_export(job: dict, job_dir: Path, features_dir: Path, config
     roc = train_dir / "tflite_stream_state_internal_quant" / "tflite_streaming_roc.txt"
     summary, cutoff = summarize_roc(*parse_roc(roc.read_text())) if roc.exists() else (None, 0.97)
     if summary:
-        emit("final_metrics", summary=summary)
         log(f"Test set ROC: AUC {summary['auc']}; cutoff {summary['cutoff']:.2f} -> FRR {summary['frr'] * 100:.0f} %, FAPH {summary['faph']:.2f}")
+    stage("converting", "Converting", "auto_threshold", "Evaluating the model on your recordings to pick the threshold", status="converting")
+    auto = auto_threshold(job, job_dir / model_name)
+    if auto:
+        cutoff = auto["cutoff"]
+        log(f"Auto threshold {cutoff:.2f}: {auto['positives_passed']}/{auto['positives_total']} positive recordings pass, highest negative {auto['negatives_max']:.2f}")
+    summary = dict(summary or {"auc": None, "cutoff": cutoff, "frr": 0.0, "faph": 0.0, "points": []})
+    summary["manifest_cutoff"] = cutoff
+    summary["auto_threshold"] = auto
+    emit("final_metrics", summary=summary)
     log(f"Manifest probability_cutoff set to {cutoff:.2f} (tune it in the JSON manifest if the word triggers too easily / too rarely)")
     write_manifest(job, job_dir, clip_ms, model_name, cutoff)
     cleanup_job_dir(job_dir, features_dir, train_dir)
     kb = (job_dir / model_name).stat().st_size // 1024
     minutes = round((time.time() - started) / 60, 1)
     emit("done", message_key="model_ready", params={"name": model_name, "kb": kb, "minutes": minutes}, message=f"Model {model_name} ({kb} kB) ready in {minutes} min")
+
+
+def auto_threshold(job: dict, model_path: Path) -> dict | None:
+    """Runs the streaming model over the project's own recordings and derives a probability cutoff that
+    lets ~95 % of the wake word recordings through while staying above every negative recording."""
+    try:
+        from app.livetest import evaluate_clip, _load_pcm16  # noqa: PLC0415
+    except Exception as exc:  # noqa: BLE001
+        log(f"Auto threshold skipped: {exc}")
+        return None
+    positives = sorted(Path(job["positive_dir"]).glob("*.wav"))
+    negatives = sorted(Path(job["negative_dir"]).glob("*.wav"))
+    if not positives:
+        return None
+    pos_scores, neg_scores = [], []
+    for kind, files, store in (("positive", positives, pos_scores), ("negative", negatives, neg_scores)):
+        for i, path in enumerate(files):
+            try:
+                store.append(evaluate_clip(model_path, _load_pcm16(path), cutoff=0.5, window=5)["max_probability"])
+            except Exception as exc:  # noqa: BLE001
+                log(f"Auto threshold: could not evaluate {path.name}: {exc}")
+            if i % 10 == 0:
+                emit("progress", current=i + 1, total=len(files))
+    if not pos_scores:
+        return None
+    pos_sorted = sorted(pos_scores)
+    p05 = pos_sorted[int(0.05 * (len(pos_sorted) - 1))]
+    neg_max = max(neg_scores) if neg_scores else 0.0
+    cutoff = min(p05 - 0.05, 0.97)
+    cutoff = max(cutoff, neg_max + 0.05)
+    cutoff = float(min(0.97, max(0.5, round(cutoff, 2))))
+    return {
+        "cutoff": cutoff,
+        "positives_total": len(pos_scores),
+        "positives_passed": sum(1 for v in pos_scores if v >= cutoff),
+        "positives_p05": round(p05, 3),
+        "negatives_total": len(neg_scores),
+        "negatives_max": round(neg_max, 3),
+        "negatives_triggered": sum(1 for v in neg_scores if v >= cutoff),
+    }
 
 
 def cleanup_job_dir(job_dir: Path, features_dir: Path, train_dir: Path) -> None:

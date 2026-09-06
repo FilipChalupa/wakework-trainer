@@ -1,9 +1,12 @@
 """Negative datasets: registry, background download with progress, status."""
 from __future__ import annotations
 
+import random
 import shutil
+import subprocess
 import threading
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,6 +14,8 @@ import requests
 from fastapi import APIRouter, HTTPException
 
 from .config import DATASETS_DIR
+
+AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aif", ".aiff"}
 
 router = APIRouter(prefix="/api/datasets", tags=["datasets"])
 
@@ -28,6 +33,45 @@ DATASETS: dict[str, dict[str, Any]] = {
         "url": "http://storage.googleapis.com/download.tensorflow.org/data/mini_speech_commands.zip",
         "type": "audio",
         "folder": "mini_speech_commands",
+    },
+    "mit_rirs": {
+        "title": "MIT room impulse responses",
+        "description": {
+            "cs": "271 impulzních odezev reálných místností (MIT Reverb survey). Nahrávky se při augmentaci „umístí“ do místnosti s dozvukem – model pak funguje i z dálky. Malé, stahuje se automaticky.",
+            "en": "271 impulse responses of real rooms (MIT Reverb survey). Augmentation places your recordings into reverberant rooms so the model works from a distance. Small, downloaded automatically.",
+        },
+        "size_mb": 12,
+        "required": True,
+        "url": "https://mcdermottlab.mit.edu/Reverb/IRMAudio/Audio.zip",
+        "type": "audio",
+        "folder": "mit_rirs",
+        "convert": {"max_seconds": 3.0, "max_files": None},
+    },
+    "esc50": {
+        "title": "ESC-50 environmental sounds",
+        "description": {
+            "cs": "2 000 pětisekundových nahrávek zvuků domácnosti a prostředí (déšť, pes, vysavač, klávesnice…). Používá se jako reálné pozadí při augmentaci i jako negativa. Stažení ~600 MB, po převodu ~320 MB.",
+            "en": "2,000 five-second clips of household and environmental sounds (rain, dog, vacuum cleaner, keyboard…). Used as real background during augmentation and as negatives. ~600 MB download, ~320 MB after conversion.",
+        },
+        "size_mb": 600,
+        "required": False,
+        "url": "https://github.com/karolpiczak/ESC-50/archive/master.zip",
+        "type": "audio",
+        "folder": "esc50",
+        "convert": {"max_seconds": 5.0, "max_files": None},
+    },
+    "fma_xs": {
+        "title": "FMA music (extra small)",
+        "description": {
+            "cs": "Krátké hudební ukázky (Free Music Archive) jako pozadí při augmentaci – rádio nebo televize v místnosti. Použije se 1 000 náhodných skladeb po 8 s.",
+            "en": "Short music excerpts (Free Music Archive) used as background during augmentation – radio or TV in the room. 1,000 random tracks, 8 s each.",
+        },
+        "size_mb": 182,
+        "required": False,
+        "url": HF_ROOT.replace("kahrendt/microwakeword", "mchl914/fma_xsmall") + "fma_xs.zip",
+        "type": "audio",
+        "folder": "fma_16k",
+        "convert": {"max_seconds": 8.0, "max_files": 1000},
     },
     "dinner_party_eval": {
         "title": "microWakeWord – dinner_party_eval",
@@ -72,6 +116,50 @@ def is_installed(name: str) -> bool:
     return any(path.rglob("*_mmap"))
 
 
+def convert_audio_tree(folder: Path, max_seconds: float | None, max_files: int | None, progress: Callable[[dict], None] | None = None) -> int:
+    """Converts every audio file below ``folder`` to 16 kHz mono 16-bit WAV (in place, originals removed)."""
+    files = [p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in AUDIO_EXT and not p.name.startswith("._")]
+    if max_files and len(files) > max_files:
+        random.Random(7).shuffle(files)
+        for stale in files[max_files:]:
+            stale.unlink(missing_ok=True)
+        files = files[:max_files]
+    done = 0
+    lock = threading.Lock()
+
+    def convert(src: Path) -> None:
+        nonlocal done
+        dst = src.with_suffix(".16k.wav")
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(src)]
+        if max_seconds:
+            cmd += ["-t", str(max_seconds)]
+        cmd += ["-ac", "1", "-ar", "16000", "-sample_fmt", "s16", str(dst)]
+        ok = subprocess.run(cmd, capture_output=True).returncode == 0 and dst.exists() and dst.stat().st_size > 1000
+        src.unlink(missing_ok=True)
+        if ok:
+            dst.rename(src.with_suffix(".wav"))
+        else:
+            dst.unlink(missing_ok=True)
+        with lock:
+            done += 1
+            if progress and (done % 25 == 0 or done == len(files)):
+                progress({"state": "converting", "received": done, "total": len(files)})
+
+    with ThreadPoolExecutor(max_workers=max(2, min(8, (os_cpu_count() or 4)))) as pool:
+        list(pool.map(convert, files))
+    # remove leftovers (metadata, csv, non-audio files) but keep the wavs
+    for p in folder.rglob("*"):
+        if p.is_file() and p.suffix.lower() != ".wav":
+            p.unlink(missing_ok=True)
+    return sum(1 for _ in folder.rglob("*.wav"))
+
+
+def os_cpu_count() -> int | None:
+    import os
+
+    return os.cpu_count()
+
+
 def status() -> list[dict[str, Any]]:
     out = []
     for name, meta in DATASETS.items():
@@ -114,6 +202,7 @@ def download(name: str, progress: Callable[[dict], None] | None = None) -> None:
         _set(name, state="extracting")
         if progress:
             progress({"state": "extracting"})
+        _set(name, received=None, total=None)
         if target.exists():
             shutil.rmtree(target)
         with zipfile.ZipFile(tmp_zip) as zf:
@@ -126,6 +215,15 @@ def download(name: str, progress: Callable[[dict], None] | None = None) -> None:
         tmp_zip.unlink(missing_ok=True)
         for junk in target.rglob("__MACOSX"):
             shutil.rmtree(junk, ignore_errors=True)
+        if meta.get("convert"):
+            _set(name, state="converting", received=0, total=None)
+
+            def conv_progress(info: dict) -> None:
+                _set(name, received=info.get("received"), total=info.get("total"))
+                if progress:
+                    progress(info)
+
+            convert_audio_tree(target, meta["convert"].get("max_seconds"), meta["convert"].get("max_files"), conv_progress)
         if not is_installed(name):
             raise RuntimeError("Archive extracted but expected files were not found")
         _set(name, state="done")
@@ -140,7 +238,7 @@ def start_download(name: str) -> dict[str, Any]:
         raise HTTPException(404, "Unknown dataset")
     with _lock:
         current = _downloads.get(name)
-        if current and current.get("state") in ("downloading", "extracting"):
+        if current and current.get("state") in ("downloading", "extracting", "converting"):
             return current
     threading.Thread(target=_safe_download, args=(name,), daemon=True).start()
     return _downloads.get(name, {"state": "downloading"})
